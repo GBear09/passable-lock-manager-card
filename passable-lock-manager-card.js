@@ -4,7 +4,7 @@ import {
   css,
 } from "https://unpkg.com/lit@3.0.0/index.js?module";
 
-const CARD_VERSION = "1.0.0";
+const CARD_VERSION = "1.0.1";
 
 console.info(
   `%c PASSABLE-LOCK-MANAGER-CARD %c v${CARD_VERSION} `,
