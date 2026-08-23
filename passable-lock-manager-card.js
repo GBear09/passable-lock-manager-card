@@ -4,7 +4,7 @@ import {
   css,
 } from "https://unpkg.com/lit@3.0.0/index.js?module";
 
-const CARD_VERSION = "1.0.1";
+const CARD_VERSION = "2.0.0";
 
 console.info(
   `%c PASSABLE-LOCK-MANAGER-CARD %c v${CARD_VERSION} `,
@@ -12,12 +12,12 @@ console.info(
   "color: white; background: #10b981; font-weight: bold;"
 );
 
-// --- INLINE ICONS (Extracted from Lucide) ---
+// --- INLINE ICONS (Extracted from Lucide & MDI) ---
 const Icons = {
   Lock: html`<svg
     xmlns="http://www.w3.org/2000/svg"
-    width="24"
-    height="24"
+    width="20"
+    height="20"
     viewBox="0 0 24 24"
     fill="none"
     stroke="currentColor"
@@ -30,8 +30,8 @@ const Icons = {
   </svg>`,
   Unlock: html`<svg
     xmlns="http://www.w3.org/2000/svg"
-    width="24"
-    height="24"
+    width="20"
+    height="20"
     viewBox="0 0 24 24"
     fill="none"
     stroke="currentColor"
@@ -41,6 +41,50 @@ const Icons = {
   >
     <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
     <path d="M7 11V7a5 5 0 0 1 9.9-1" />
+  </svg>`,
+  Door: html`<svg
+    xmlns="http://www.w3.org/2000/svg"
+    width="20"
+    height="20"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M18 20V6a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v14" />
+    <path d="M2 20h20" />
+    <path d="M14 12v.01" />
+  </svg>`,
+  Battery: html`<svg
+    xmlns="http://www.w3.org/2000/svg"
+    width="14"
+    height="14"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <rect width="16" height="10" x="2" y="7" rx="2" ry="2" />
+    <line x1="22" x2="22" y1="11" y2="13" />
+  </svg>`,
+  AlertTriangle: html`<svg
+    xmlns="http://www.w3.org/2000/svg"
+    width="16"
+    height="16"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+    <line x1="12" x2="12" y1="9" y2="13" />
+    <line x1="12" x2="12.01" y1="17" y2="17" />
   </svg>`,
   User: html`<svg
     xmlns="http://www.w3.org/2000/svg"
@@ -203,6 +247,19 @@ const Icons = {
   >
     <path d="m6 9 6 6 6-6" />
   </svg>`,
+  ChevronUp: html`<svg
+    xmlns="http://www.w3.org/2000/svg"
+    width="20"
+    height="20"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="m18 15-6-6-6 6" />
+  </svg>`,
   Play: html`<svg
     xmlns="http://www.w3.org/2000/svg"
     width="16"
@@ -216,6 +273,19 @@ const Icons = {
   >
     <polygon points="5 3 19 12 5 21 5 3" />
   </svg>`,
+  Check: html`<svg
+    xmlns="http://www.w3.org/2000/svg"
+    width="16"
+    height="16"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2.5"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <polyline points="20 6 9 17 4 12" />
+  </svg>`,
 };
 
 class PassableLockManagerCard extends LitElement {
@@ -225,10 +295,26 @@ class PassableLockManagerCard extends LitElement {
 
   static getStubConfig() {
     return {
-      title: "Lock Manager",
-      subtitle: "Entry Door Smart Locks",
+      title: "Entry Door Locks & Access",
+      subtitle: "Smart Lock Command Center",
       slots: 10,
       manage_script: "script.manage_lock_codes",
+      collapse_inactive_slots: true,
+      show_lock_all: true,
+      locks: [
+        {
+          entity: "lock.front_door",
+          name: "Front Door",
+          battery: "sensor.front_door_battery_level",
+          jammed: "binary_sensor.front_door_lock_jammed",
+        },
+        {
+          entity: "lock.mudroom_door",
+          name: "Mudroom Door",
+          battery: "sensor.mudroom_door_battery_level",
+          jammed: "binary_sensor.mudroom_door_lock_jammed",
+        },
+      ],
     };
   }
 
@@ -239,6 +325,7 @@ class PassableLockManagerCard extends LitElement {
     _localName: { state: true },
     _localPin: { state: true },
     _openSections: { state: true },
+    _expandedInactive: { state: true },
   };
 
   constructor() {
@@ -247,6 +334,7 @@ class PassableLockManagerCard extends LitElement {
     this._localName = "";
     this._localPin = "";
     this._openSections = {};
+    this._expandedInactive = false;
     this._fullDaysList = [
       "Sunday",
       "Monday",
@@ -263,11 +351,19 @@ class PassableLockManagerCard extends LitElement {
     if (!config) {
       throw new Error("Invalid configuration.");
     }
-    this.config = config;
+    this.config = {
+      title: "Entry Door Locks & Access",
+      subtitle: "Smart Lock Command Center",
+      slots: 10,
+      manage_script: "script.manage_lock_codes",
+      collapse_inactive_slots: true,
+      show_lock_all: true,
+      ...config,
+    };
   }
 
   getCardSize() {
-    return 4;
+    return 6;
   }
 
   _callService(domain, service, data) {
@@ -286,8 +382,89 @@ class PassableLockManagerCard extends LitElement {
     return ent ? ent.state : defaultVal;
   }
 
-  // --- EVENT HANDLERS ---
+  // --- ROLE-BASED ACCESS CONTROL ---
+  _canManagePins() {
+    if (!this.hass) return false;
+    const adminUsers = this.config?.admin_users;
+
+    // If specific admin users are provided, check ID or username
+    if (Array.isArray(adminUsers) && adminUsers.length > 0) {
+      const currentUserId = this.hass.user?.id;
+      const currentUserName = this.hass.user?.name;
+      return (
+        (currentUserId && adminUsers.includes(currentUserId)) ||
+        (currentUserName && adminUsers.includes(currentUserName))
+      );
+    }
+
+    // If require_admin is set to true, check HA admin flag
+    if (this.config?.require_admin) {
+      return this.hass.user?.is_admin === true;
+    }
+
+    // Default: If no restriction configured, allow access
+    return true;
+  }
+
+  // --- RELATIVE TIME HELPER ---
+  _formatRelativeTime(isoString) {
+    if (!isoString) return "";
+    try {
+      const now = new Date();
+      const past = new Date(isoString);
+      const diffSec = Math.floor((now.getTime() - past.getTime()) / 1000);
+
+      if (isNaN(diffSec) || diffSec < 0) return "";
+      if (diffSec < 60) return "just now";
+      const diffMin = Math.floor(diffSec / 60);
+      if (diffMin < 60) return `${diffMin}m ago`;
+      const diffHours = Math.floor(diffMin / 60);
+      if (diffHours < 24) return `${diffHours}h ago`;
+      const diffDays = Math.floor(diffHours / 24);
+      return `${diffDays}d ago`;
+    } catch {
+      return "";
+    }
+  }
+
+  // --- DOOR LOCK CONTROLS ---
+  _getNormalizedLocks() {
+    const raw = this.config?.locks;
+    if (!raw || !Array.isArray(raw)) return [];
+    return raw.map((item) => {
+      if (typeof item === "string") {
+        return { entity: item };
+      }
+      return item;
+    });
+  }
+
+  _toggleLock(lockEntity, currentState) {
+    if (!this.hass || !lockEntity) return;
+    if (currentState === "locked") {
+      this._callService("lock", "unlock", { entity_id: lockEntity });
+    } else {
+      this._callService("lock", "lock", { entity_id: lockEntity });
+    }
+  }
+
+  _lockAllDoors(locks) {
+    if (!this.hass || !locks || locks.length === 0) return;
+    const unlockedEntities = locks
+      .filter((l) => {
+        const state = this._getState(l.entity);
+        return state !== "locked";
+      })
+      .map((l) => l.entity);
+
+    if (unlockedEntities.length > 0) {
+      this._callService("lock", "lock", { entity_id: unlockedEntities });
+    }
+  }
+
+  // --- EVENT HANDLERS FOR SLOTS ---
   _openEdit(slot) {
+    if (!this._canManagePins()) return;
     this._editingSlot = slot;
     this._localName = this._getState(`input_text.lock_code_name_${slot}`);
     this._localPin = this._getState(`input_text.lock_code_pin_${slot}`);
@@ -299,7 +476,8 @@ class PassableLockManagerCard extends LitElement {
 
   _handleSave() {
     const slot = this._editingSlot;
-    const scriptEntity = this.config?.manage_script || "script.manage_lock_codes";
+    const scriptEntity =
+      this.config?.manage_script || "script.manage_lock_codes";
     const [domain, service] = scriptEntity.split(".");
 
     this._callService("input_text", "set_value", {
@@ -327,7 +505,8 @@ class PassableLockManagerCard extends LitElement {
 
   _handleClear() {
     const slot = this._editingSlot;
-    const scriptEntity = this.config?.manage_script || "script.manage_lock_codes";
+    const scriptEntity =
+      this.config?.manage_script || "script.manage_lock_codes";
     const [domain, service] = scriptEntity.split(".");
 
     if (confirm(`Delete code slot ${slot}?`)) {
@@ -400,16 +579,35 @@ class PassableLockManagerCard extends LitElement {
 
     return html`
       <div class="container">
-        ${!this._editingSlot ? this._renderGrid() : this._renderEdit()}
+        ${!this._editingSlot ? this._renderMainView() : this._renderEdit()}
       </div>
     `;
   }
 
-  _renderGrid() {
-    const totalSlots = this.config?.slots || 10;
-    const title = this.config?.title || "Lock Manager";
-    const subtitle = this.config?.subtitle || "Entry Door Smart Locks";
+  _renderMainView() {
+    const locks = this._getNormalizedLocks();
+    const canManage = this._canManagePins();
 
+    const title = this.config?.title || "Entry Door Locks & Access";
+    const subtitle = this.config?.subtitle || "Smart Lock Command Center";
+
+    // Overall Lock Status Computation
+    let anyUnlocked = false;
+    let anyJammed = false;
+    let totalLocks = locks.length;
+
+    locks.forEach((lockDef) => {
+      const lockObj = this._getEntity(lockDef.entity);
+      const state = lockObj ? lockObj.state : "unknown";
+      const jammedObj = lockDef.jammed ? this._getEntity(lockDef.jammed) : null;
+      const isJammed =
+        (jammedObj && jammedObj.state === "on") || state === "jammed";
+
+      if (isJammed) anyJammed = true;
+      if (state !== "locked") anyUnlocked = true;
+    });
+
+    const totalSlots = this.config?.slots || 10;
     const activeSlots = Object.keys(this.hass.states).filter(
       (k) =>
         k.startsWith("input_boolean.lock_code_enabled_") &&
@@ -418,24 +616,244 @@ class PassableLockManagerCard extends LitElement {
 
     return html`
       <div class="view fade-in">
+        <!-- Main Card Header -->
         <div class="header">
           <div>
             <h1 class="title">${title}</h1>
             <p class="subtitle">${subtitle}</p>
           </div>
-          <div style="text-align: right;">
-            <div class="stats-count">
-              ${activeSlots}<span class="divider">/</span>${totalSlots}
+
+          <div class="header-right">
+            ${totalLocks > 0
+              ? html`
+                  <div class="global-status">
+                    ${anyJammed
+                      ? html`<span class="status-pill jammed"
+                          >${Icons.AlertTriangle} Lock Jammed</span
+                        >`
+                      : anyUnlocked
+                      ? html`<span class="status-pill unlocked"
+                          >${Icons.Unlock} Door Unlocked</span
+                        >`
+                      : html`<span class="status-pill locked"
+                          >${Icons.Check} All Locked</span
+                        >`}
+                    ${anyUnlocked && this.config?.show_lock_all !== false
+                      ? html`
+                          <button
+                            class="lock-all-btn"
+                            @click=${() => this._lockAllDoors(locks)}
+                            title="Lock all doors"
+                          >
+                            ${Icons.Lock} Lock All
+                          </button>
+                        `
+                      : ""}
+                  </div>
+                `
+              : canManage
+              ? html`
+                  <div style="text-align: right;">
+                    <div class="stats-count">
+                      ${activeSlots}<span class="divider">/</span>${totalSlots}
+                    </div>
+                    <div class="stats-label">Active</div>
+                  </div>
+                `
+              : ""}
+          </div>
+        </div>
+
+        <!-- Live Door Controls Hero Section -->
+        ${totalLocks > 0 ? this._renderDoorsSection(locks) : ""}
+
+        <!-- PIN Code & Access Management Section (Role Restricted) -->
+        ${canManage ? this._renderSlotsSection(totalSlots, activeSlots) : ""}
+      </div>
+    `;
+  }
+
+  // --- DOORS HERO SECTION ---
+  _renderDoorsSection(locks) {
+    return html`
+      <div class="doors-section">
+        <div class="section-label">
+          <span>Door Controls & Status</span>
+        </div>
+        <div class="doors-grid">
+          ${locks.map((lockDef) => this._renderDoorCard(lockDef))}
+        </div>
+      </div>
+    `;
+  }
+
+  _renderDoorCard(lockDef) {
+    const lockEntity = lockDef.entity;
+    const lockObj = this._getEntity(lockEntity);
+    const state = lockObj ? lockObj.state : "unknown";
+    const name =
+      lockDef.name ||
+      lockObj?.attributes?.friendly_name ||
+      lockEntity.replace("lock.", "").replace(/_/g, " ");
+
+    const isLocked = state === "locked";
+    const isLocking = state === "locking";
+    const isUnlocking = state === "unlocking";
+
+    // Jammed Sensor Check
+    const jammedObj = lockDef.jammed ? this._getEntity(lockDef.jammed) : null;
+    const isJammed =
+      (jammedObj && jammedObj.state === "on") || state === "jammed";
+
+    // Battery Sensor Check
+    const batteryObj = lockDef.battery
+      ? this._getEntity(lockDef.battery)
+      : null;
+    const batteryState = batteryObj ? batteryObj.state : null;
+    const batteryNum =
+      batteryState !== null && !isNaN(Number(batteryState))
+        ? Number(batteryState)
+        : null;
+
+    // Relative Time
+    const relativeTime = lockObj?.last_changed
+      ? this._formatRelativeTime(lockObj.last_changed)
+      : "";
+
+    return html`
+      <div
+        class="door-card ${isJammed
+          ? "jammed"
+          : isLocked
+          ? "locked"
+          : "unlocked"}"
+      >
+        ${isJammed
+          ? html`
+              <div class="jammed-alert-banner">
+                ${Icons.AlertTriangle}
+                <span>DEADBOLT JAMMED — CHECK DOOR</span>
+              </div>
+            `
+          : ""}
+
+        <div class="door-card-header">
+          <div class="door-icon-wrapper ${isLocked ? "locked" : "unlocked"}">
+            ${Icons.Door}
+          </div>
+          <div class="door-title-wrapper">
+            <h3 class="door-name">${name}</h3>
+            <span class="door-time">
+              ${isLocking
+                ? "Locking..."
+                : isUnlocking
+                ? "Unlocking..."
+                : relativeTime
+                ? `${isLocked ? "Locked" : "Unlocked"} ${relativeTime}`
+                : isLocked
+                ? "Locked"
+                : "Unlocked"}
+            </span>
+          </div>
+
+          ${batteryNum !== null
+            ? html`
+                <div
+                  class="battery-pill ${batteryNum <= 20
+                    ? "critical"
+                    : batteryNum <= 50
+                    ? "warning"
+                    : "good"}"
+                  title="Battery: ${batteryNum}%"
+                >
+                  ${Icons.Battery}
+                  <span>${batteryNum}%</span>
+                </div>
+              `
+            : ""}
+        </div>
+
+        <div class="door-action-row">
+          <button
+            class="door-toggle-btn ${isLocked ? "btn-locked" : "btn-unlocked"}"
+            @click=${() => this._toggleLock(lockEntity, state)}
+            ?disabled=${isLocking || isUnlocking}
+          >
+            <div class="btn-icon">${isLocked ? Icons.Lock : Icons.Unlock}</div>
+            <div class="btn-text">
+              <span class="btn-action-label"
+                >${isLocked ? "Locked" : "Unlocked"}</span
+              >
+              <span class="btn-sub-label"
+                >${isLocked ? "Tap to unlock" : "Tap to lock"}</span
+              >
             </div>
-            <div class="stats-label">Active</div>
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  // --- SLOTS MANAGEMENT SECTION ---
+  _renderSlotsSection(totalSlots, activeSlots) {
+    const collapse = this.config?.collapse_inactive_slots !== false;
+
+    // Categorize slots
+    const allSlotIndices = Array.from({ length: totalSlots }, (_, i) => i + 1);
+    const activeSlotIndices = [];
+    const inactiveSlotIndices = [];
+
+    allSlotIndices.forEach((slot) => {
+      const enabled =
+        this._getState(`input_boolean.lock_code_enabled_${slot}`) === "on";
+      const timer = this._getState(`timer.lock_code_timer_${slot}`, "idle");
+      if (enabled || timer === "active") {
+        activeSlotIndices.push(slot);
+      } else {
+        inactiveSlotIndices.push(slot);
+      }
+    });
+
+    const displaySlots =
+      !collapse || this._expandedInactive
+        ? allSlotIndices
+        : activeSlotIndices.length > 0
+        ? activeSlotIndices
+        : allSlotIndices;
+
+    const hiddenCount = totalSlots - activeSlotIndices.length;
+
+    return html`
+      <div class="slots-section">
+        <div class="section-label-row">
+          <span class="section-label-text">PIN Code & Guest Access</span>
+          <div class="slots-badge-counter">
+            ${activeSlots}<span class="divider">/</span>${totalSlots} Active
           </div>
         </div>
 
         <div class="grid">
-          ${Array.from({ length: totalSlots }, (_, i) =>
-            this._renderSlotCard(i + 1, i)
+          ${displaySlots.map((slot, idx) =>
+            this._renderSlotCard(slot, idx)
           )}
         </div>
+
+        ${collapse && hiddenCount > 0 && activeSlotIndices.length > 0
+          ? html`
+              <button
+                class="expand-toggle-btn"
+                @click=${() =>
+                  (this._expandedInactive = !this._expandedInactive)}
+              >
+                ${this._expandedInactive ? Icons.ChevronUp : Icons.ChevronDown}
+                <span>
+                  ${this._expandedInactive
+                    ? "Hide Inactive & Empty Slots"
+                    : `Show All Slots (${hiddenCount} Inactive / Empty)`}
+                </span>
+              </button>
+            `
+          : ""}
       </div>
     `;
   }
@@ -455,7 +873,7 @@ class PassableLockManagerCard extends LitElement {
     return html`
       <div
         class="slot-card ${enabled ? "enabled" : "disabled"}"
-        style="animation-delay: ${index * 0.05}s"
+        style="animation-delay: ${index * 0.04}s"
         @click=${() => this._openEdit(slot)}
       >
         <div class="card-header">
@@ -491,6 +909,7 @@ class PassableLockManagerCard extends LitElement {
     `;
   }
 
+  // --- EDIT MODAL VIEW ---
   _renderEdit() {
     const slot = this._editingSlot;
 
@@ -518,7 +937,8 @@ class PassableLockManagerCard extends LitElement {
     const timerOpts =
       this._getEntity(timerActionEntId)?.attributes?.options || [];
 
-    const scriptEntity = this.config?.manage_script || "script.manage_lock_codes";
+    const scriptEntity =
+      this.config?.manage_script || "script.manage_lock_codes";
     const [domain, service] = scriptEntity.split(".");
 
     return html`
@@ -662,10 +1082,14 @@ class PassableLockManagerCard extends LitElement {
                 class="button-outline"
                 style="margin-top: 16px;"
                 @click=${() =>
-                  this._callService(domain || "script", service || "manage_lock_codes", {
-                    action: "set_timed",
-                    code_slot: slot.toString(),
-                  })}
+                  this._callService(
+                    domain || "script",
+                    service || "manage_lock_codes",
+                    {
+                      action: "set_timed",
+                      code_slot: slot.toString(),
+                    }
+                  )}
               >
                 ${Icons.Play}
                 <span style="margin-left:8px"
@@ -820,7 +1244,7 @@ class PassableLockManagerCard extends LitElement {
         width: 100%;
         overflow: hidden;
         position: relative;
-        min-height: 400px;
+        min-height: 280px;
         transition: height 0.3s ease;
       }
       .view {
@@ -831,41 +1255,314 @@ class PassableLockManagerCard extends LitElement {
       .fade-in {
         animation: fadeIn 0.3s ease-out;
       }
+
+      /* Header */
       .header {
         display: flex;
         justify-content: space-between;
         align-items: flex-end;
-        margin-bottom: 24px;
+        margin-bottom: 20px;
         border-bottom: 1px solid var(--divider-color, #e0e0e0);
         padding-bottom: 16px;
       }
       .title {
-        font-size: 24px;
-        font-weight: 500;
+        font-size: 22px;
+        font-weight: 600;
         margin: 0;
         letter-spacing: -0.01em;
       }
       .subtitle {
         color: var(--secondary-text-color, #757575);
-        font-size: 14px;
+        font-size: 13px;
         margin-top: 4px;
         margin-bottom: 0;
       }
-      .stats-count {
-        font-size: 24px;
-        font-weight: 300;
+      .header-right {
+        display: flex;
+        align-items: center;
+        gap: 12px;
       }
-      .stats-count .divider {
-        color: var(--secondary-text-color);
-        font-size: 16px;
-        margin: 0 4px;
+      .global-status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
       }
-      .stats-label {
+      .status-pill {
         font-size: 12px;
-        color: var(--secondary-text-color);
+        font-weight: 600;
+        padding: 4px 10px;
+        border-radius: 16px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
         text-transform: uppercase;
-        font-weight: 500;
+        letter-spacing: 0.04em;
       }
+      .status-pill.locked {
+        background-color: rgba(var(--rgb-success-color, 76, 175, 80), 0.15);
+        color: var(--success-color, #4caf50);
+        border: 1px solid rgba(var(--rgb-success-color, 76, 175, 80), 0.3);
+      }
+      .status-pill.unlocked {
+        background-color: rgba(var(--rgb-warning-color, 255, 152, 0), 0.15);
+        color: var(--warning-color, #ff9800);
+        border: 1px solid rgba(var(--rgb-warning-color, 255, 152, 0), 0.3);
+      }
+      .status-pill.jammed {
+        background-color: rgba(var(--rgb-error-color, 244, 67, 54), 0.2);
+        color: var(--error-color, #f44336);
+        border: 1px solid rgba(var(--rgb-error-color, 244, 67, 54), 0.5);
+        animation: pulseWarning 1.5s infinite;
+      }
+      .lock-all-btn {
+        background-color: var(--primary-color, #2196f3);
+        color: var(--text-primary-color, #fff);
+        border: none;
+        border-radius: 16px;
+        padding: 4px 12px;
+        font-size: 12px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        cursor: pointer;
+        transition: all 0.2s;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+      }
+      .lock-all-btn:hover {
+        opacity: 0.9;
+        transform: translateY(-1px);
+      }
+
+      /* Doors Hero Section */
+      .doors-section {
+        margin-bottom: 24px;
+      }
+      .section-label {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--secondary-text-color, #757575);
+        margin-bottom: 12px;
+      }
+      .doors-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 12px;
+      }
+      .door-card {
+        background-color: var(
+          --secondary-background-color,
+          rgba(255, 255, 255, 0.05)
+        );
+        border: 1px solid var(--divider-color, rgba(255, 255, 255, 0.1));
+        border-radius: var(--ha-card-border-radius, 12px);
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        transition: all 0.25s ease;
+        position: relative;
+        overflow: hidden;
+      }
+      .door-card.locked {
+        border-left: 4px solid var(--success-color, #4caf50);
+      }
+      .door-card.unlocked {
+        border-left: 4px solid var(--warning-color, #ff9800);
+        background-color: rgba(var(--rgb-warning-color, 255, 152, 0), 0.04);
+      }
+      .door-card.jammed {
+        border-left: 4px solid var(--error-color, #f44336);
+        border-color: rgba(var(--rgb-error-color, 244, 67, 54), 0.5);
+        background-color: rgba(var(--rgb-error-color, 244, 67, 54), 0.08);
+      }
+      .jammed-alert-banner {
+        background-color: var(--error-color, #f44336);
+        color: white;
+        padding: 6px 12px;
+        border-radius: 6px;
+        font-size: 11px;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        letter-spacing: 0.05em;
+        animation: pulseWarning 1.5s infinite;
+      }
+      .door-card-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .door-icon-wrapper {
+        width: 38px;
+        height: 38px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background-color: var(--secondary-background-color, #eee);
+        color: var(--secondary-text-color, #757575);
+      }
+      .door-icon-wrapper.locked {
+        background-color: rgba(var(--rgb-success-color, 76, 175, 80), 0.15);
+        color: var(--success-color, #4caf50);
+      }
+      .door-icon-wrapper.unlocked {
+        background-color: rgba(var(--rgb-warning-color, 255, 152, 0), 0.15);
+        color: var(--warning-color, #ff9800);
+      }
+      .door-title-wrapper {
+        flex: 1;
+        min-width: 0;
+      }
+      .door-name {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .door-time {
+        font-size: 12px;
+        color: var(--secondary-text-color, #757575);
+        margin-top: 2px;
+        display: block;
+      }
+      .battery-pill {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 4px 8px;
+        border-radius: 12px;
+        background-color: var(--secondary-background-color, #eee);
+      }
+      .battery-pill.good {
+        color: var(--success-color, #4caf50);
+        background-color: rgba(var(--rgb-success-color, 76, 175, 80), 0.12);
+      }
+      .battery-pill.warning {
+        color: var(--warning-color, #ff9800);
+        background-color: rgba(var(--rgb-warning-color, 255, 152, 0), 0.12);
+      }
+      .battery-pill.critical {
+        color: var(--error-color, #f44336);
+        background-color: rgba(var(--rgb-error-color, 244, 67, 54), 0.15);
+        animation: pulseWarning 1.5s infinite;
+      }
+
+      .door-action-row {
+        display: flex;
+      }
+      .door-toggle-btn {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 16px;
+        border-radius: 10px;
+        border: 1px solid var(--divider-color, #e0e0e0);
+        cursor: pointer;
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        text-align: left;
+        background-color: var(--card-background-color, #fff);
+        color: var(--primary-text-color);
+      }
+      .door-toggle-btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.08);
+      }
+      .door-toggle-btn.btn-locked {
+        border-color: rgba(var(--rgb-success-color, 76, 175, 80), 0.4);
+      }
+      .door-toggle-btn.btn-locked .btn-icon {
+        color: var(--success-color, #4caf50);
+        background-color: rgba(var(--rgb-success-color, 76, 175, 80), 0.12);
+      }
+      .door-toggle-btn.btn-unlocked {
+        border-color: rgba(var(--rgb-warning-color, 255, 152, 0), 0.4);
+        background-color: rgba(var(--rgb-warning-color, 255, 152, 0), 0.06);
+      }
+      .door-toggle-btn.btn-unlocked .btn-icon {
+        color: var(--warning-color, #ff9800);
+        background-color: rgba(var(--rgb-warning-color, 255, 152, 0), 0.15);
+      }
+      .btn-icon {
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .btn-text {
+        display: flex;
+        flex-direction: column;
+      }
+      .btn-action-label {
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .btn-sub-label {
+        font-size: 11px;
+        color: var(--secondary-text-color, #757575);
+      }
+
+      /* Slots Section */
+      .slots-section {
+        margin-top: 12px;
+      }
+      .section-label-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      .section-label-text {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--secondary-text-color, #757575);
+      }
+      .slots-badge-counter {
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--secondary-text-color, #757575);
+      }
+      .slots-badge-counter .divider {
+        margin: 0 2px;
+      }
+      .expand-toggle-btn {
+        width: 100%;
+        margin-top: 12px;
+        padding: 10px;
+        border-radius: 8px;
+        border: 1px dashed var(--divider-color, #bdbdbd);
+        background-color: transparent;
+        color: var(--primary-color, #2196f3);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        font-size: 13px;
+        font-weight: 500;
+        transition: all 0.2s;
+      }
+      .expand-toggle-btn:hover {
+        background-color: rgba(var(--rgb-primary-color, 33, 150, 243), 0.06);
+        border-color: var(--primary-color, #2196f3);
+      }
+
+      /* Slot Grid */
       .grid {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
@@ -1327,6 +2024,17 @@ class PassableLockManagerCard extends LitElement {
           opacity: 1;
         }
       }
+      @keyframes pulseWarning {
+        0%,
+        100% {
+          opacity: 1;
+          transform: scale(1);
+        }
+        50% {
+          opacity: 0.8;
+          transform: scale(0.98);
+        }
+      }
     `;
   }
 }
@@ -1346,6 +2054,16 @@ class PassableLockManagerCardEditor extends LitElement {
     return [
       { name: "title", label: "Card Title", selector: { text: {} } },
       { name: "subtitle", label: "Card Subtitle", selector: { text: {} } },
+      {
+        name: "collapse_inactive_slots",
+        label: "Collapse Inactive Slots (Expandable)",
+        selector: { boolean: {} },
+      },
+      {
+        name: "show_lock_all",
+        label: "Show 'Lock All' Button",
+        selector: { boolean: {} },
+      },
       {
         name: "slots",
         label: "Number of Code Slots",
@@ -1376,10 +2094,19 @@ class PassableLockManagerCardEditor extends LitElement {
   render() {
     if (!this.hass || !this._config) return html``;
     const data = {
-      title: this._config.title || "Lock Manager",
-      subtitle: this._config.subtitle || "Entry Door Smart Locks",
+      title: this._config.title || "Entry Door Locks & Access",
+      subtitle: this._config.subtitle || "Smart Lock Command Center",
+      collapse_inactive_slots:
+        this._config.collapse_inactive_slots !== undefined
+          ? this._config.collapse_inactive_slots
+          : true,
+      show_lock_all:
+        this._config.show_lock_all !== undefined
+          ? this._config.show_lock_all
+          : true,
       slots: this._config.slots !== undefined ? this._config.slots : 10,
-      manage_script: this._config.manage_script || "script.manage_lock_codes",
+      manage_script:
+        this._config.manage_script || "script.manage_lock_codes",
     };
 
     return html`
@@ -1431,6 +2158,6 @@ window.customCards.push({
   name: "Passable Lock Manager Card",
   preview: true,
   description:
-    "Dynamic smart lock PIN code manager card for Home Assistant supporting slot management, temporary timers, guest modes, and schedule controls.",
+    "Unified smart lock command center with live door toggles, battery & jammed diagnostics, and slot PIN management.",
   documentationURL: "https://github.com/GBear09/passable-lock-manager-card",
 });

@@ -4,14 +4,19 @@
 [![version](https://img.shields.io/github/v/release/GBear09/passable-lock-manager-card)](https://github.com/GBear09/passable-lock-manager-card/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A sleek, dynamic, custom dashboard card for Home Assistant smart lock PIN code management. Designed for entry door lock code slots with active status counters, 6-digit random PIN generation, temporary duration access timers, guest mode toggles, and day/time schedule access controls.
+A sleek, dynamic, unified dashboard card for Home Assistant smart locks and PIN code management. Combines live door lock/unlock toggling, battery levels, high-urgency deadbolt jammed alerts, and full code slot administration (6-digit random PIN generation, temporary duration access timers, guest mode toggles, and day/time schedule access controls).
 
 ---
 
 ## ✨ Features
 
+- 🚪 **Live Door Controls Hero Section**: 1-tap lock/unlock toggles, live status pill indicators, relative last-changed timestamps, and "Lock All" action.
+- 🚨 **Jammed Deadbolt Alerts**: Instant high-urgency pulsing warning banner when a lock is jammed.
+- 🔋 **Battery Health Diagnostics**: Color-coded battery percentage indicators with critical low-battery alerts.
+- 🛡️ **Built-in Role-Based Access Control (RBAC)**: Restrict PIN code slot visibility to specified admin users (`admin_users`) or administrators (`require_admin`).
+- 📂 **Collapsible Inactive Slots**: Keep the card compact by showing active slots first with a 1-tap toggle to expand all slots.
 - 🔐 **Slot Overview Grid**: Displays up to 30 code slots with real-time active/disabled badges, configured name, masked PIN preview (`••••`), and active counters.
-- ⚡ **Full Visual Editor Support**: Native Home Assistant UI editor allowing easy configuration of card title, subtitle, total slot count, and management script entity.
+- ⚡ **Full Visual Editor Support**: Native Home Assistant UI editor allowing easy configuration of title, subtitle, door locks, total slot count, collapse settings, and management script entity.
 - 🎲 **Instant PIN Generator**: One-click 6-digit secure random PIN creation inside the slot edit modal.
 - ⏱️ **Temporary Access Timers**: Set duration in hours with selectable timer actions (`clear_code`, `disable_slot`, `notify_only`) and quick start/stop control.
 - 🛡️ **Guest Mode Integration**: Easily assign guest access mode triggers to individual lock slots.
@@ -33,21 +38,28 @@ A sleek, dynamic, custom dashboard card for Home Assistant smart lock PIN code m
 
 ## ⚙️ Configuration
 
-### Visual UI Editor
-Click **Edit Dashboard** -> **Add Card** -> Search for **Passable Lock Manager Card**. Use the form fields to customize:
-- **Card Title** (default: `Lock Manager`)
-- **Card Subtitle** (default: `Entry Door Smart Locks`)
-- **Number of Code Slots** (default: `10`)
-- **Manage Lock Codes Script** (default: `script.manage_lock_codes`)
-
-### Manual YAML Example
+### Manual YAML Example (Unified Command Center)
 
 ```yaml
 type: custom:passable-lock-manager-card
-title: Front Door Lock Codes
-subtitle: Entry & Guest Access
+title: Entry Door Locks & Access
+subtitle: Smart Lock Command Center
 slots: 10
 manage_script: script.manage_lock_codes
+admin_users:
+  - 8dbc02434afe44edb77eab6b41471860
+  - 12061794833e45b6bd5dc50ebbbbbf11
+collapse_inactive_slots: true
+show_lock_all: true
+locks:
+  - entity: lock.front_door
+    name: Front Door
+    battery: sensor.front_door_battery_level
+    jammed: binary_sensor.front_door_lock_jammed
+  - entity: lock.mudroom_door
+    name: Mudroom Door
+    battery: sensor.mudroom_door_battery_level
+    jammed: binary_sensor.mudroom_door_lock_jammed
 ```
 
 ---
