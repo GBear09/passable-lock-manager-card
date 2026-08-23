@@ -4,7 +4,7 @@ import {
   css,
 } from "https://unpkg.com/lit@3.0.0/index.js?module";
 
-const CARD_VERSION = "2.0.0";
+const CARD_VERSION = "2.0.1";
 
 console.info(
   `%c PASSABLE-LOCK-MANAGER-CARD %c v${CARD_VERSION} `,
@@ -2044,80 +2044,485 @@ class PassableLockManagerCardEditor extends LitElement {
   static properties = {
     hass: { attribute: false },
     _config: { state: true },
+    _expandedSections: { state: true },
+    _expandedLocks: { state: true },
+    _users: { state: true },
   };
+
+  constructor() {
+    super();
+    this._expandedSections = {
+      header: true,
+      doors: true,
+      security: false,
+      slots: false,
+    };
+    this._expandedLocks = {};
+    this._users = [];
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    this._fetchUsers();
+  }
+
+  async _fetchUsers() {
+    if (this.hass && this.hass.user && this.hass.user.is_admin) {
+      try {
+        const users = await this.hass.connection.sendMessagePromise({
+          type: "config/auth/list",
+        });
+        this._users = users.map((u) => ({ label: u.name, value: u.id }));
+        this.requestUpdate();
+      } catch (e) {
+        console.error("Failed to fetch users", e);
+      }
+    }
+  }
 
   setConfig(config) {
     this._config = config;
   }
 
-  get _schema() {
-    return [
-      { name: "title", label: "Card Title", selector: { text: {} } },
-      { name: "subtitle", label: "Card Subtitle", selector: { text: {} } },
-      {
-        name: "collapse_inactive_slots",
-        label: "Collapse Inactive Slots (Expandable)",
-        selector: { boolean: {} },
-      },
-      {
-        name: "show_lock_all",
-        label: "Show 'Lock All' Button",
-        selector: { boolean: {} },
-      },
-      {
-        name: "slots",
-        label: "Number of Code Slots",
-        selector: { number: { min: 1, max: 30, mode: "box" } },
-      },
-      {
-        name: "manage_script",
-        label: "Manage Lock Codes Script",
-        selector: { entity: { domain: "script" } },
-      },
-    ];
+  _fireConfigChange() {
+    this.dispatchEvent(
+      new CustomEvent("config-changed", {
+        detail: { config: this._config },
+        bubbles: true,
+        composed: true,
+      })
+    );
   }
 
-  _valueChanged(ev) {
-    if (!this._config || !this.hass) return;
-    const newConfig = {
-      ...this._config,
-      ...ev.detail.value,
+  _toggleSection(section, ev) {
+    if (ev) ev.stopPropagation();
+    this._expandedSections = {
+      ...this._expandedSections,
+      [section]: !this._expandedSections[section],
     };
-    const event = new CustomEvent("config-changed", {
-      detail: { config: newConfig },
-      bubbles: true,
-      composed: true,
-    });
-    this.dispatchEvent(event);
+    this.requestUpdate();
+  }
+
+  _toggleLockItem(index, ev) {
+    if (ev) ev.stopPropagation();
+    this._expandedLocks = {
+      ...this._expandedLocks,
+      [index]: !this._expandedLocks[index],
+    };
+    this.requestUpdate();
+  }
+
+  _updateConfigValue(key, value) {
+    if (!this._config) return;
+    const newConfig = { ...this._config };
+    if (value === undefined || value === "" || value === null) {
+      delete newConfig[key];
+    } else {
+      newConfig[key] = value;
+    }
+    this._config = newConfig;
+    this._fireConfigChange();
+  }
+
+  // Locks management
+  _addLock(ev) {
+    if (ev) {
+      ev.stopPropagation();
+      ev.preventDefault();
+    }
+    const currentLocks = this._config?.locks ? [...this._config.locks] : [];
+    const newLock = { entity: "", name: "", battery: "", jammed: "" };
+    currentLocks.push(newLock);
+    this._config = { ...this._config, locks: currentLocks };
+    this._expandedLocks = {
+      ...this._expandedLocks,
+      [currentLocks.length - 1]: true,
+    };
+    this.requestUpdate();
+    this._fireConfigChange();
+  }
+
+  _removeLock(index, ev) {
+    if (ev) {
+      ev.stopPropagation();
+      ev.preventDefault();
+    }
+    const currentLocks = this._config?.locks ? [...this._config.locks] : [];
+    currentLocks.splice(index, 1);
+    this._config = { ...this._config, locks: currentLocks };
+    this.requestUpdate();
+    this._fireConfigChange();
+  }
+
+  _updateLockField(index, field, value) {
+    const currentLocks = this._config?.locks ? [...this._config.locks] : [];
+    let lockObj = currentLocks[index];
+    if (typeof lockObj === "string") {
+      lockObj = { entity: lockObj };
+    }
+    lockObj = { ...lockObj };
+    if (value === undefined || value === "" || value === null) {
+      delete lockObj[field];
+    } else {
+      lockObj[field] = value;
+    }
+    currentLocks[index] = lockObj;
+    this._config = { ...this._config, locks: currentLocks };
+    this.requestUpdate();
+    this._fireConfigChange();
+  }
+
+  static get styles() {
+    return css`
+      .editor-container {
+        padding: 8px 0;
+        color: var(--primary-text-color);
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .editor-section {
+        border: 1px solid var(--divider-color, #e0e0e0);
+        border-radius: 8px;
+        overflow: hidden;
+        background-color: var(--card-background-color, #fff);
+      }
+      .editor-section-header {
+        padding: 12px 16px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        cursor: pointer;
+        user-select: none;
+        background-color: var(--secondary-background-color, #f5f5f5);
+        border-bottom: 1px solid transparent;
+      }
+      .editor-section-header.open {
+        border-bottom-color: var(--divider-color, #e0e0e0);
+      }
+      .section-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .section-body {
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .side-by-side {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+      .lock-item-card {
+        border: 1px solid var(--divider-color, #e0e0e0);
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 8px;
+        background-color: var(--secondary-background-color, #fafafa);
+      }
+      .lock-item-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        cursor: pointer;
+      }
+      .lock-item-title {
+        font-weight: 600;
+        font-size: 13px;
+      }
+      .lock-item-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .delete-btn {
+        cursor: pointer;
+        color: var(--error-color, #f44336);
+        padding: 4px;
+      }
+      .add-button {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        background-color: transparent;
+        color: var(--primary-color, #2196f3);
+        border: 1px dashed var(--primary-color, #2196f3);
+        border-radius: 8px;
+        padding: 10px;
+        width: 100%;
+        cursor: pointer;
+        justify-content: center;
+        font-weight: 600;
+        font-size: 13px;
+        transition: background-color 0.2s;
+      }
+      .add-button:hover {
+        background-color: rgba(var(--rgb-primary-color, 33, 150, 243), 0.08);
+      }
+      .help-text {
+        font-size: 12px;
+        color: var(--secondary-text-color, #757575);
+        margin: 0;
+      }
+    `;
   }
 
   render() {
     if (!this.hass || !this._config) return html``;
-    const data = {
-      title: this._config.title || "Entry Door Locks & Access",
-      subtitle: this._config.subtitle || "Smart Lock Command Center",
-      collapse_inactive_slots:
-        this._config.collapse_inactive_slots !== undefined
-          ? this._config.collapse_inactive_slots
-          : true,
-      show_lock_all:
-        this._config.show_lock_all !== undefined
-          ? this._config.show_lock_all
-          : true,
-      slots: this._config.slots !== undefined ? this._config.slots : 10,
-      manage_script:
-        this._config.manage_script || "script.manage_lock_codes",
-    };
+
+    const locks = this._config.locks || [];
+
+    const renderHeader = (id, title, extraBtn) => html`
+      <div
+        class="editor-section-header ${this._expandedSections[id] ? "open" : ""}"
+        @click=${(ev) => this._toggleSection(id, ev)}
+      >
+        <div class="section-title">
+          <ha-icon
+            icon="${this._expandedSections[id]
+              ? "mdi:chevron-down"
+              : "mdi:chevron-right"}"
+          ></ha-icon>
+          <span>${title}</span>
+        </div>
+        ${extraBtn || ""}
+      </div>
+    `;
 
     return html`
-      <div style="padding: 0 16px 16px; color: var(--primary-text-color);">
-        <ha-form
-          .hass=${this.hass}
-          .data=${data}
-          .schema=${this._schema}
-          .computeLabel=${(s) => s.label || s.name}
-          @value-changed=${this._valueChanged}
-        ></ha-form>
+      <div class="editor-container">
+        <!-- 1. CARD HEADER SETTINGS -->
+        <div class="editor-section">
+          ${renderHeader("header", "Card Header & Info")}
+          <div
+            class="section-body"
+            style="display: ${this._expandedSections.header
+              ? "flex"
+              : "none"};"
+          >
+            <ha-selector
+              .hass=${this.hass}
+              .selector=${{ text: {} }}
+              .value=${this._config.title || "Entry Door Locks & Access"}
+              .label=${"Card Title"}
+              @value-changed=${(e) =>
+                this._updateConfigValue("title", e.detail.value)}
+            ></ha-selector>
+
+            <ha-selector
+              .hass=${this.hass}
+              .selector=${{ text: {} }}
+              .value=${this._config.subtitle || "Smart Lock Command Center"}
+              .label=${"Card Subtitle"}
+              @value-changed=${(e) =>
+                this._updateConfigValue("subtitle", e.detail.value)}
+            ></ha-selector>
+          </div>
+        </div>
+
+        <!-- 2. DOOR LOCKS & DIAGNOSTICS -->
+        <div class="editor-section">
+          ${renderHeader(
+            "doors",
+            `Door Locks & Controls (${locks.length})`
+          )}
+          <div
+            class="section-body"
+            style="display: ${this._expandedSections.doors ? "flex" : "none"};"
+          >
+            <ha-selector
+              .hass=${this.hass}
+              .selector=${{ boolean: {} }}
+              .value=${this._config.show_lock_all !== false}
+              .label=${"Show 'Lock All' Quick Action Button"}
+              @value-changed=${(e) =>
+                this._updateConfigValue("show_lock_all", e.detail.value)}
+            ></ha-selector>
+
+            <p class="help-text">
+              Configure smart lock entities and optional battery/jammed diagnostics sensors.
+            </p>
+
+            ${locks.map((lockItem, index) => {
+              const lockObj =
+                typeof lockItem === "string" ? { entity: lockItem } : lockItem;
+              const isExp = this._expandedLocks[index] !== false;
+              const lockTitle =
+                lockObj.name ||
+                lockObj.entity ||
+                `Door Lock ${index + 1}`;
+
+              return html`
+                <div class="lock-item-card">
+                  <div
+                    class="lock-item-header"
+                    @click=${(ev) => this._toggleLockItem(index, ev)}
+                  >
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <ha-icon
+                        icon="${isExp
+                          ? "mdi:chevron-down"
+                          : "mdi:chevron-right"}"
+                      ></ha-icon>
+                      <span class="lock-item-title">${lockTitle}</span>
+                    </div>
+                    <div
+                      class="lock-item-actions"
+                      @click=${(e) => e.stopPropagation()}
+                    >
+                      <ha-icon
+                        class="delete-btn"
+                        icon="mdi:delete"
+                        @click=${(ev) => this._removeLock(index, ev)}
+                        title="Remove door lock"
+                      ></ha-icon>
+                    </div>
+                  </div>
+
+                  <div
+                    style="display: ${isExp
+                      ? "flex"
+                      : "none"}; flex-direction: column; gap: 12px; margin-top: 12px;"
+                  >
+                    <ha-selector
+                      .hass=${this.hass}
+                      .selector=${{ entity: { domain: "lock" } }}
+                      .value=${lockObj.entity || ""}
+                      .label=${"Lock Entity (Required)"}
+                      @value-changed=${(e) =>
+                        this._updateLockField(index, "entity", e.detail.value)}
+                    ></ha-selector>
+
+                    <ha-selector
+                      .hass=${this.hass}
+                      .selector=${{ text: {} }}
+                      .value=${lockObj.name || ""}
+                      .label=${"Custom Name (Optional)"}
+                      @value-changed=${(e) =>
+                        this._updateLockField(index, "name", e.detail.value)}
+                    ></ha-selector>
+
+                    <div class="side-by-side">
+                      <ha-selector
+                        .hass=${this.hass}
+                        .selector=${{ entity: { domain: "sensor" } }}
+                        .value=${lockObj.battery || ""}
+                        .label=${"Battery Sensor (Optional)"}
+                        @value-changed=${(e) =>
+                          this._updateLockField(
+                            index,
+                            "battery",
+                            e.detail.value
+                          )}
+                      ></ha-selector>
+
+                      <ha-selector
+                        .hass=${this.hass}
+                        .selector=${{ entity: { domain: "binary_sensor" } }}
+                        .value=${lockObj.jammed || ""}
+                        .label=${"Jammed Sensor (Optional)"}
+                        @value-changed=${(e) =>
+                          this._updateLockField(index, "jammed", e.detail.value)}
+                      ></ha-selector>
+                    </div>
+                  </div>
+                </div>
+              `;
+            })}
+
+            <button class="add-button" @click=${(ev) => this._addLock(ev)}>
+              <ha-icon icon="mdi:plus"></ha-icon>
+              <span>Add Door Lock</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 3. ACCESS CONTROL & ROLE PERMISSIONS -->
+        <div class="editor-section">
+          ${renderHeader("security", "Security & Access Permissions (RBAC)")}
+          <div
+            class="section-body"
+            style="display: ${this._expandedSections.security
+              ? "flex"
+              : "none"};"
+          >
+            <p class="help-text">
+              Restrict PIN Code & Schedule management to specific users. Non-admin users will only see the Door Controls section.
+            </p>
+
+            <ha-selector
+              .hass=${this.hass}
+              .selector=${{
+                select: {
+                  multiple: true,
+                  custom_value: true,
+                  options: this._users || [],
+                },
+              }}
+              .value=${this._config.admin_users || []}
+              .label=${"Admin User IDs with PIN Management Access"}
+              @value-changed=${(e) =>
+                this._updateConfigValue("admin_users", e.detail.value)}
+            ></ha-selector>
+
+            <ha-selector
+              .hass=${this.hass}
+              .selector=${{ boolean: {} }}
+              .value=${this._config.require_admin || false}
+              .label=${"Require Administrator Role (Alternative to specific users)"}
+              @value-changed=${(e) =>
+                this._updateConfigValue("require_admin", e.detail.value)}
+            ></ha-selector>
+          </div>
+        </div>
+
+        <!-- 4. PIN CODE & SLOT MANAGEMENT -->
+        <div class="editor-section">
+          ${renderHeader("slots", "PIN Code Slots & Automation")}
+          <div
+            class="section-body"
+            style="display: ${this._expandedSections.slots
+              ? "flex"
+              : "none"};"
+          >
+            <ha-selector
+              .hass=${this.hass}
+              .selector=${{ boolean: {} }}
+              .value=${this._config.collapse_inactive_slots !== false}
+              .label=${"Collapse Inactive & Empty Slots (Show 1-Tap Expander)"}
+              @value-changed=${(e) =>
+                this._updateConfigValue(
+                  "collapse_inactive_slots",
+                  e.detail.value
+                )}
+            ></ha-selector>
+
+            <ha-selector
+              .hass=${this.hass}
+              .selector=${{ number: { min: 1, max: 30, mode: "box" } }}
+              .value=${this._config.slots !== undefined
+                ? this._config.slots
+                : 10}
+              .label=${"Total Code Slots"}
+              @value-changed=${(e) =>
+                this._updateConfigValue("slots", e.detail.value)}
+            ></ha-selector>
+
+            <ha-selector
+              .hass=${this.hass}
+              .selector=${{ entity: { domain: "script" } }}
+              .value=${this._config.manage_script || "script.manage_lock_codes"}
+              .label=${"Manage Lock Codes Backend Script"}
+              @value-changed=${(e) =>
+                this._updateConfigValue("manage_script", e.detail.value)}
+            ></ha-selector>
+          </div>
+        </div>
       </div>
     `;
   }

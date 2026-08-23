@@ -1,6 +1,6 @@
 {
   "name": "passable-lock-manager-card",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Dynamic smart lock PIN code manager card for Home Assistant supporting PIN generation, temporary access timers, guest mode triggers, and day/time schedule access controls.",
   "main": "passable-lock-manager-card.js",
   "repository": {
