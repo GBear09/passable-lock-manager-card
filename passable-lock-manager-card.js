@@ -4,7 +4,7 @@ import {
   css,
 } from "https://unpkg.com/lit@3.0.0/index.js?module";
 
-const CARD_VERSION = "2.0.1";
+const CARD_VERSION = "2.0.2";
 
 console.info(
   `%c PASSABLE-LOCK-MANAGER-CARD %c v${CARD_VERSION} `,
@@ -2174,18 +2174,28 @@ class PassableLockManagerCardEditor extends LitElement {
 
   static get styles() {
     return css`
+      :host {
+        display: block;
+        box-sizing: border-box;
+        width: 100%;
+      }
       .editor-container {
-        padding: 8px 0;
+        padding: 4px 0;
         color: var(--primary-text-color);
         display: flex;
         flex-direction: column;
         gap: 16px;
+        box-sizing: border-box;
+        width: 100%;
+        overflow: hidden;
       }
       .editor-section {
         border: 1px solid var(--divider-color, #e0e0e0);
         border-radius: 8px;
         overflow: hidden;
         background-color: var(--card-background-color, #fff);
+        box-sizing: border-box;
+        width: 100%;
       }
       .editor-section-header {
         padding: 12px 16px;
@@ -2196,6 +2206,7 @@ class PassableLockManagerCardEditor extends LitElement {
         user-select: none;
         background-color: var(--secondary-background-color, #f5f5f5);
         border-bottom: 1px solid transparent;
+        box-sizing: border-box;
       }
       .editor-section-header.open {
         border-bottom-color: var(--divider-color, #e0e0e0);
@@ -2212,11 +2223,8 @@ class PassableLockManagerCardEditor extends LitElement {
         display: flex;
         flex-direction: column;
         gap: 16px;
-      }
-      .side-by-side {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 12px;
+        box-sizing: border-box;
+        width: 100%;
       }
       .lock-item-card {
         border: 1px solid var(--divider-color, #e0e0e0);
@@ -2224,6 +2232,9 @@ class PassableLockManagerCardEditor extends LitElement {
         padding: 12px;
         margin-bottom: 8px;
         background-color: var(--secondary-background-color, #fafafa);
+        box-sizing: border-box;
+        width: 100%;
+        overflow: hidden;
       }
       .lock-item-header {
         display: flex;
@@ -2260,6 +2271,7 @@ class PassableLockManagerCardEditor extends LitElement {
         font-weight: 600;
         font-size: 13px;
         transition: background-color 0.2s;
+        box-sizing: border-box;
       }
       .add-button:hover {
         background-color: rgba(var(--rgb-primary-color, 33, 150, 243), 0.08);
@@ -2268,6 +2280,10 @@ class PassableLockManagerCardEditor extends LitElement {
         font-size: 12px;
         color: var(--secondary-text-color, #757575);
         margin: 0;
+      }
+      ha-selector {
+        width: 100%;
+        box-sizing: border-box;
       }
     `;
   }
@@ -2407,29 +2423,27 @@ class PassableLockManagerCardEditor extends LitElement {
                         this._updateLockField(index, "name", e.detail.value)}
                     ></ha-selector>
 
-                    <div class="side-by-side">
-                      <ha-selector
-                        .hass=${this.hass}
-                        .selector=${{ entity: { domain: "sensor" } }}
-                        .value=${lockObj.battery || ""}
-                        .label=${"Battery Sensor (Optional)"}
-                        @value-changed=${(e) =>
-                          this._updateLockField(
-                            index,
-                            "battery",
-                            e.detail.value
-                          )}
-                      ></ha-selector>
+                    <ha-selector
+                      .hass=${this.hass}
+                      .selector=${{ entity: { domain: "sensor" } }}
+                      .value=${lockObj.battery || ""}
+                      .label=${"Battery Sensor (Optional)"}
+                      @value-changed=${(e) =>
+                        this._updateLockField(
+                          index,
+                          "battery",
+                          e.detail.value
+                        )}
+                    ></ha-selector>
 
-                      <ha-selector
-                        .hass=${this.hass}
-                        .selector=${{ entity: { domain: "binary_sensor" } }}
-                        .value=${lockObj.jammed || ""}
-                        .label=${"Jammed Sensor (Optional)"}
-                        @value-changed=${(e) =>
-                          this._updateLockField(index, "jammed", e.detail.value)}
-                      ></ha-selector>
-                    </div>
+                    <ha-selector
+                      .hass=${this.hass}
+                      .selector=${{ entity: { domain: "binary_sensor" } }}
+                      .value=${lockObj.jammed || ""}
+                      .label=${"Jammed Sensor (Optional)"}
+                      @value-changed=${(e) =>
+                        this._updateLockField(index, "jammed", e.detail.value)}
+                    ></ha-selector>
                   </div>
                 </div>
               `;
