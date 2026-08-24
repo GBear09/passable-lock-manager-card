@@ -4,7 +4,7 @@ import {
   css,
 } from "https://unpkg.com/lit@3.0.0/index.js?module";
 
-const CARD_VERSION = "2.1.0";
+const CARD_VERSION = "2.1.1";
 
 console.info(
   `%c PASSABLE-LOCK-MANAGER-CARD %c v${CARD_VERSION} `,
@@ -251,8 +251,8 @@ const Icons = {
   </svg>`,
   ChevronDown: html`<svg
     xmlns="http://www.w3.org/2000/svg"
-    width="20"
-    height="20"
+    width="18"
+    height="18"
     viewBox="0 0 24 24"
     fill="none"
     stroke="currentColor"
@@ -264,8 +264,8 @@ const Icons = {
   </svg>`,
   ChevronUp: html`<svg
     xmlns="http://www.w3.org/2000/svg"
-    width="20"
-    height="20"
+    width="18"
+    height="18"
     viewBox="0 0 24 24"
     fill="none"
     stroke="currentColor"
@@ -319,6 +319,7 @@ class PassableLockManagerCard extends LitElement {
       show_timeline: true,
       timeline_hours: 24,
       max_events: 10,
+      default_expand_activity: false,
       locks: [
         {
           entity: "lock.front_door",
@@ -344,6 +345,7 @@ class PassableLockManagerCard extends LitElement {
     _localPin: { state: true },
     _openSections: { state: true },
     _expandedInactive: { state: true },
+    _expandedRecentActivity: { state: true },
     _historyData: { state: true },
     _logbookEvents: { state: true },
     _selectedTimelineFilter: { state: true },
@@ -358,6 +360,7 @@ class PassableLockManagerCard extends LitElement {
     this._localPin = "";
     this._openSections = {};
     this._expandedInactive = false;
+    this._expandedRecentActivity = false;
     this._historyData = {};
     this._logbookEvents = [];
     this._selectedTimelineFilter = "all";
@@ -383,7 +386,6 @@ class PassableLockManagerCard extends LitElement {
     super.connectedCallback();
     this._fetchUsers();
     this._fetchActivityData();
-    // Periodic refresh every 45 seconds
     this._fetchTimer = setInterval(() => {
       this._fetchActivityData();
     }, 45000);
@@ -403,6 +405,11 @@ class PassableLockManagerCard extends LitElement {
       const now = Date.now();
       if (now - this._lastFetchTime > 30000) {
         this._fetchActivityData();
+      }
+    }
+    if (changedProperties.has("config")) {
+      if (this.config?.default_expand_activity !== undefined) {
+        this._expandedRecentActivity = this.config.default_expand_activity;
       }
     }
   }
@@ -434,6 +441,7 @@ class PassableLockManagerCard extends LitElement {
       show_timeline: true,
       timeline_hours: 24,
       max_events: 10,
+      default_expand_activity: false,
       ...config,
     };
   }
@@ -456,6 +464,46 @@ class PassableLockManagerCard extends LitElement {
   _getState(entityId, defaultVal = "") {
     const ent = this._getEntity(entityId);
     return ent ? ent.state : defaultVal;
+  }
+
+  // --- TIMESTAMP & STATE NORMALIZERS ---
+  _parseTimestamp(val) {
+    if (!val) return 0;
+    if (typeof val === "number") {
+      // If UNIX timestamp is in seconds (< 1e11), convert to milliseconds
+      return val < 1e11 ? val * 1000 : val;
+    }
+    if (typeof val === "string") {
+      if (!isNaN(Number(val)) && !val.includes("-") && !val.includes("T")) {
+        const num = Number(val);
+        return num < 1e11 ? num * 1000 : num;
+      }
+      const parsed = new Date(val).getTime();
+      return isNaN(parsed) ? 0 : parsed;
+    }
+    return 0;
+  }
+
+  _extractState(item) {
+    if (!item) return "locked";
+    if (typeof item === "string") return item.toLowerCase();
+    const raw = item.state !== undefined ? item.state : item.s;
+    return (raw || "locked").toString().toLowerCase();
+  }
+
+  _extractTimestamp(item) {
+    if (!item) return 0;
+    const raw =
+      item.last_changed !== undefined
+        ? item.last_changed
+        : item.lc !== undefined
+        ? item.lc
+        : item.last_updated !== undefined
+        ? item.last_updated
+        : item.lu !== undefined
+        ? item.lu
+        : item.when;
+    return this._parseTimestamp(raw);
   }
 
   // --- ROLE-BASED ACCESS CONTROL ---
@@ -620,10 +668,9 @@ class PassableLockManagerCard extends LitElement {
         rawState === "jammed" || rawMsg.includes("jammed");
       const isUnlocked = !isLocked && !isJammed;
 
-      const when =
-        typeof ev.when === "number"
-          ? new Date(ev.when * 1000)
-          : new Date(ev.when);
+      const rawWhen = ev.when;
+      const timeMs = this._parseTimestamp(rawWhen);
+      const when = new Date(timeMs);
 
       // Identity Resolution
       let actor = "";
@@ -790,66 +837,80 @@ class PassableLockManagerCard extends LitElement {
     }
 
     const sorted = [...rawStates].sort(
-      (a, b) =>
-        new Date(a.last_changed).getTime() - new Date(b.last_changed).getTime()
+      (a, b) => this._extractTimestamp(a) - this._extractTimestamp(b)
     );
 
-    const segments = [];
-    let currentSegmentState = sorted[0].state;
-    let currentSegmentStart = windowStart;
+    let currentState = this._extractState(sorted[0]);
+    const futureChanges = [];
 
     for (let i = 0; i < sorted.length; i++) {
-      const item = sorted[i];
-      const itemTime = new Date(item.last_changed).getTime();
-
-      if (itemTime < windowStart) {
-        currentSegmentState = item.state;
-        continue;
+      const t = this._extractTimestamp(sorted[i]);
+      const st = this._extractState(sorted[i]);
+      if (t <= windowStart) {
+        currentState = st;
+      } else if (t <= windowEnd) {
+        futureChanges.push({ time: t, state: st });
       }
-
-      if (itemTime > currentSegmentStart) {
-        const segEnd = itemTime;
-        const durMs = segEnd - currentSegmentStart;
-        segments.push({
-          state: currentSegmentState,
-          start: currentSegmentStart,
-          end: segEnd,
-          pctStart: ((currentSegmentStart - windowStart) / windowMs) * 100,
-          pctWidth: (durMs / windowMs) * 100,
-          durationStr: this._formatDuration(durMs),
-          timeRangeStr: `${new Date(currentSegmentStart).toLocaleTimeString([], {
-            hour: "numeric",
-            minute: "2-digit",
-          })} – ${new Date(segEnd).toLocaleTimeString([], {
-            hour: "numeric",
-            minute: "2-digit",
-          })}`,
-          entityId,
-        });
-      }
-
-      currentSegmentState = item.state;
-      currentSegmentStart = itemTime;
     }
 
-    if (currentSegmentStart < windowEnd) {
-      const durMs = windowEnd - currentSegmentStart;
-      segments.push({
-        state: currentSegmentState,
-        start: currentSegmentStart,
+    const rawSegments = [];
+    let currStart = windowStart;
+
+    for (let i = 0; i < futureChanges.length; i++) {
+      const change = futureChanges[i];
+      if (change.time > currStart) {
+        rawSegments.push({
+          state: currentState,
+          start: currStart,
+          end: change.time,
+        });
+      }
+      currStart = change.time;
+      currentState = change.state;
+    }
+
+    if (currStart < windowEnd) {
+      rawSegments.push({
+        state: currentState,
+        start: currStart,
         end: windowEnd,
-        pctStart: ((currentSegmentStart - windowStart) / windowMs) * 100,
-        pctWidth: (durMs / windowMs) * 100,
-        durationStr: this._formatDuration(durMs),
-        timeRangeStr: `${new Date(currentSegmentStart).toLocaleTimeString([], {
-          hour: "numeric",
-          minute: "2-digit",
-        })} – Now`,
-        entityId,
       });
     }
 
-    return segments;
+    // Merge contiguous segments with identical state
+    const merged = [];
+    rawSegments.forEach((seg) => {
+      const last = merged[merged.length - 1];
+      if (last && last.state === seg.state) {
+        last.end = seg.end;
+      } else {
+        merged.push({ ...seg });
+      }
+    });
+
+    return merged.map((seg) => {
+      const durMs = seg.end - seg.start;
+      return {
+        state: seg.state,
+        start: seg.start,
+        end: seg.end,
+        pctStart: ((seg.start - windowStart) / windowMs) * 100,
+        pctWidth: (durMs / windowMs) * 100,
+        durationStr: this._formatDuration(durMs),
+        timeRangeStr: `${new Date(seg.start).toLocaleTimeString([], {
+          hour: "numeric",
+          minute: "2-digit",
+        })} – ${
+          seg.end === windowEnd
+            ? "Now"
+            : new Date(seg.end).toLocaleTimeString([], {
+                hour: "numeric",
+                minute: "2-digit",
+              })
+        }`,
+        entityId,
+      };
+    });
   }
 
   _buildCombinedSegments(targetEntities, windowStart, windowEnd, windowMs) {
@@ -857,7 +918,7 @@ class PassableLockManagerCard extends LitElement {
     targetEntities.forEach((eid) => {
       const list = this._historyData[eid] || [];
       list.forEach((item) => {
-        const t = new Date(item.last_changed).getTime();
+        const t = this._extractTimestamp(item);
         if (t >= windowStart && t <= windowEnd) {
           timePoints.add(t);
         }
@@ -865,7 +926,7 @@ class PassableLockManagerCard extends LitElement {
     });
 
     const sortedTimes = Array.from(timePoints).sort((a, b) => a - b);
-    const segments = [];
+    const rawSegments = [];
 
     for (let i = 0; i < sortedTimes.length - 1; i++) {
       const tStart = sortedTimes[i];
@@ -880,11 +941,18 @@ class PassableLockManagerCard extends LitElement {
         const rawStates = this._historyData[eid] || [];
         let stateAtMid = this._getState(eid, "locked");
 
-        for (let j = rawStates.length - 1; j >= 0; j--) {
-          const changeTime = new Date(rawStates[j].last_changed).getTime();
-          if (changeTime <= midpoint) {
-            stateAtMid = rawStates[j].state;
-            break;
+        if (rawStates.length > 0) {
+          const sorted = [...rawStates].sort(
+            (a, b) => this._extractTimestamp(a) - this._extractTimestamp(b)
+          );
+          stateAtMid = this._extractState(sorted[0]);
+          for (let k = 0; k < sorted.length; k++) {
+            const changeTime = this._extractTimestamp(sorted[k]);
+            if (changeTime <= midpoint) {
+              stateAtMid = this._extractState(sorted[k]);
+            } else {
+              break;
+            }
           }
         }
 
@@ -899,48 +967,46 @@ class PassableLockManagerCard extends LitElement {
       const durMs = tEnd - tStart;
       if (durMs <= 0) continue;
 
-      const lastSeg = segments[segments.length - 1];
-      if (lastSeg && lastSeg.state === compositeState) {
-        lastSeg.end = tEnd;
-        const newDur = tEnd - lastSeg.start;
-        lastSeg.pctWidth = (newDur / windowMs) * 100;
-        lastSeg.durationStr = this._formatDuration(newDur);
-        lastSeg.timeRangeStr = `${new Date(lastSeg.start).toLocaleTimeString(
-          [],
-          { hour: "numeric", minute: "2-digit" }
-        )} – ${
-          tEnd === windowEnd
+      rawSegments.push({
+        state: compositeState,
+        start: tStart,
+        end: tEnd,
+      });
+    }
+
+    const merged = [];
+    rawSegments.forEach((seg) => {
+      const last = merged[merged.length - 1];
+      if (last && last.state === seg.state) {
+        last.end = seg.end;
+      } else {
+        merged.push({ ...seg });
+      }
+    });
+
+    return merged.map((seg) => {
+      const durMs = seg.end - seg.start;
+      return {
+        state: seg.state,
+        start: seg.start,
+        end: seg.end,
+        pctStart: ((seg.start - windowStart) / windowMs) * 100,
+        pctWidth: (durMs / windowMs) * 100,
+        durationStr: this._formatDuration(durMs),
+        timeRangeStr: `${new Date(seg.start).toLocaleTimeString([], {
+          hour: "numeric",
+          minute: "2-digit",
+        })} – ${
+          seg.end === windowEnd
             ? "Now"
-            : new Date(tEnd).toLocaleTimeString([], {
+            : new Date(seg.end).toLocaleTimeString([], {
                 hour: "numeric",
                 minute: "2-digit",
               })
-        }`;
-      } else {
-        segments.push({
-          state: compositeState,
-          start: tStart,
-          end: tEnd,
-          pctStart: ((tStart - windowStart) / windowMs) * 100,
-          pctWidth: (durMs / windowMs) * 100,
-          durationStr: this._formatDuration(durMs),
-          timeRangeStr: `${new Date(tStart).toLocaleTimeString([], {
-            hour: "numeric",
-            minute: "2-digit",
-          })} – ${
-            tEnd === windowEnd
-              ? "Now"
-              : new Date(tEnd).toLocaleTimeString([], {
-                  hour: "numeric",
-                  minute: "2-digit",
-                })
-          }`,
-          entityId: "all",
-        });
-      }
-    }
-
-    return segments;
+        }`,
+        entityId: "all",
+      };
+    });
   }
 
   _getTimeAxisTicks(hours) {
@@ -953,7 +1019,13 @@ class PassableLockManagerCard extends LitElement {
     if (hours <= 48) {
       return ["48h ago", "36h ago", "24h ago", "12h ago", "Now"];
     }
-    return [`${hours}h ago`, `${Math.round(hours * 0.75)}h`, `${Math.round(hours * 0.5)}h`, `${Math.round(hours * 0.25)}h`, "Now"];
+    return [
+      `${hours}h ago`,
+      `${Math.round(hours * 0.75)}h`,
+      `${Math.round(hours * 0.5)}h`,
+      `${Math.round(hours * 0.25)}h`,
+      "Now",
+    ];
   }
 
   // --- EVENT HANDLERS FOR SLOTS ---
@@ -1163,7 +1235,7 @@ class PassableLockManagerCard extends LitElement {
         <!-- 1. Live Door Controls Hero Section -->
         ${totalLocks > 0 ? this._renderDoorsSection(locks) : ""}
 
-        <!-- 2. 24-Hour Timeline Bar & Activity Feed -->
+        <!-- 2. 24-Hour Timeline Bar & Collapsible Activity Feed -->
         ${showTimeline && totalLocks > 0 ? this._renderActivitySection(locks) : ""}
 
         <!-- 3. PIN Code & Access Management Section (Role Restricted) -->
@@ -1300,6 +1372,7 @@ class PassableLockManagerCard extends LitElement {
     const segments = this._calculateTimelineSegments();
     const axisTicks = this._getTimeAxisTicks(hours);
     const eventList = this._logbookEvents || [];
+    const isExpanded = this._expandedRecentActivity;
 
     return html`
       <div class="activity-section">
@@ -1307,7 +1380,7 @@ class PassableLockManagerCard extends LitElement {
           <div class="activity-title-group">
             <span class="activity-icon-header">${Icons.History}</span>
             <span class="section-label-text">
-              ${hours}-Hour Timeline & History
+              ${hours}-Hour Activity Timeline
             </span>
           </div>
 
@@ -1379,74 +1452,103 @@ class PassableLockManagerCard extends LitElement {
           </div>
         </div>
 
-        <!-- Detailed Event List (Last ~10 Events) -->
-        <div class="event-feed-container">
-          <div class="feed-header">
-            <span class="feed-title">Recent Activity (${eventList.length})</span>
+        <!-- Collapsible Recent Activity Expander Button -->
+        <button
+          class="activity-expand-btn ${isExpanded ? "open" : ""}"
+          @click=${() =>
+            (this._expandedRecentActivity = !this._expandedRecentActivity)}
+        >
+          <div class="expand-btn-left">
+            <span class="expand-chevron"
+              >${isExpanded ? Icons.ChevronUp : Icons.ChevronDown}</span
+            >
+            <span>
+              ${isExpanded
+                ? "Hide Recent Activity Log"
+                : `Show Recent Activity Log (${eventList.length} Events)`}
+            </span>
+          </div>
+          <div class="expand-btn-right">
             <button
               class="feed-refresh-btn ${this._isFetchingActivity
                 ? "spinning"
                 : ""}"
-              @click=${() => this._fetchActivityData()}
+              @click=${(e) => {
+                e.stopPropagation();
+                this._fetchActivityData();
+              }}
               title="Refresh activity history"
             >
               ${Icons.RefreshCw}
             </button>
           </div>
+        </button>
 
-          ${eventList.length === 0
-            ? html`
-                <div class="empty-feed">
-                  No lock activity recorded in the last ${hours} hours.
-                </div>
-              `
-            : html`
-                <div class="event-list">
-                  ${eventList.map(
-                    (ev) => html`
-                      <div class="event-row">
-                        <div
-                          class="event-icon-box ${ev.actionLabel.toLowerCase()}"
-                        >
-                          ${ev.isLocked
-                            ? Icons.Lock
-                            : ev.isJammed
-                            ? Icons.AlertTriangle
-                            : Icons.Unlock}
-                        </div>
-
-                        <div class="event-details">
-                          <div class="event-top-line">
-                            <span class="event-door-badge">${ev.doorName}</span>
-                            <span
-                              class="event-action ${ev.actionLabel.toLowerCase()}"
-                              >${ev.actionLabel}</span
-                            >
-                          </div>
-                          <div class="event-sub-line">
-                            <span class="event-actor">
-                              ${ev.sourceIcon === "pin"
-                                ? Icons.Key
-                                : ev.sourceIcon === "user"
-                                ? Icons.User
-                                : ev.sourceIcon === "automation"
-                                ? Icons.Clock
-                                : Icons.Door}
-                              ${ev.actor}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div class="event-time-box">
-                          <span class="event-time-clock">${ev.timeStr}</span>
-                          <span class="event-time-rel">${ev.relativeTime}</span>
-                        </div>
+        <!-- Detailed Event List (Collapsible) -->
+        ${isExpanded
+          ? html`
+              <div class="event-feed-container fade-in">
+                ${eventList.length === 0
+                  ? html`
+                      <div class="empty-feed">
+                        No lock activity recorded in the last ${hours} hours.
                       </div>
                     `
-                  )}
-                </div>
-              `}
-        </div>
+                  : html`
+                      <div class="event-list">
+                        ${eventList.map(
+                          (ev) => html`
+                            <div class="event-row">
+                              <div
+                                class="event-icon-box ${ev.actionLabel.toLowerCase()}"
+                              >
+                                ${ev.isLocked
+                                  ? Icons.Lock
+                                  : ev.isJammed
+                                  ? Icons.AlertTriangle
+                                  : Icons.Unlock}
+                              </div>
+
+                              <div class="event-details">
+                                <div class="event-top-line">
+                                  <span class="event-door-badge"
+                                    >${ev.doorName}</span
+                                  >
+                                  <span
+                                    class="event-action ${ev.actionLabel.toLowerCase()}"
+                                    >${ev.actionLabel}</span
+                                  >
+                                </div>
+                                <div class="event-sub-line">
+                                  <span class="event-actor">
+                                    ${ev.sourceIcon === "pin"
+                                      ? Icons.Key
+                                      : ev.sourceIcon === "user"
+                                      ? Icons.User
+                                      : ev.sourceIcon === "automation"
+                                      ? Icons.Clock
+                                      : Icons.Door}
+                                    ${ev.actor}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div class="event-time-box">
+                                <span class="event-time-clock"
+                                  >${ev.timeStr}</span
+                                >
+                                <span class="event-time-rel"
+                                  >${ev.relativeTime}</span
+                                >
+                              </div>
+                            </div>
+                          `
+                        )}
+                      </div>
+                    `}
+              </div>
+            `
+          : ""}
       </div>
     `;
   }
@@ -2296,24 +2398,55 @@ class PassableLockManagerCard extends LitElement {
         margin-top: 6px;
       }
 
+      /* Collapsible Recent Activity Expander Button */
+      .activity-expand-btn {
+        width: 100%;
+        margin-top: 14px;
+        padding: 8px 12px;
+        border-radius: 8px;
+        border: 1px solid var(--divider-color, rgba(255, 255, 255, 0.1));
+        background-color: var(
+          --card-background-color,
+          rgba(255, 255, 255, 0.02)
+        );
+        color: var(--primary-text-color);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 12px;
+        font-weight: 500;
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+      .activity-expand-btn:hover {
+        background-color: rgba(var(--rgb-primary-color, 33, 150, 243), 0.06);
+        border-color: var(--primary-color, #2196f3);
+      }
+      .activity-expand-btn.open {
+        border-color: var(--primary-color, #2196f3);
+        background-color: rgba(var(--rgb-primary-color, 33, 150, 243), 0.04);
+      }
+      .expand-btn-left {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .expand-chevron {
+        color: var(--primary-color, #2196f3);
+        display: flex;
+        align-items: center;
+      }
+      .expand-btn-right {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
       /* Detailed Event Feed */
       .event-feed-container {
-        margin-top: 18px;
+        margin-top: 12px;
         border-top: 1px solid var(--divider-color, rgba(255, 255, 255, 0.08));
-        padding-top: 14px;
-      }
-      .feed-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 10px;
-      }
-      .feed-title {
-        font-size: 12px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: var(--secondary-text-color, #757575);
+        padding-top: 12px;
       }
       .feed-refresh-btn {
         background: transparent;
@@ -3408,9 +3541,18 @@ class PassableLockManagerCardEditor extends LitElement {
               .hass=${this.hass}
               .selector=${{ boolean: {} }}
               .value=${this._config.show_timeline !== false}
-              .label=${"Show 24-Hour Timeline & Activity Feed"}
+              .label=${"Show 24-Hour Activity Timeline Bar"}
               @value-changed=${(e) =>
                 this._updateConfigValue("show_timeline", e.detail.value)}
+            ></ha-selector>
+
+            <ha-selector
+              .hass=${this.hass}
+              .selector=${{ boolean: {} }}
+              .value=${this._config.default_expand_activity || false}
+              .label=${"Expand Activity Log Details by Default"}
+              @value-changed=${(e) =>
+                this._updateConfigValue("default_expand_activity", e.detail.value)}
             ></ha-selector>
 
             <ha-selector
