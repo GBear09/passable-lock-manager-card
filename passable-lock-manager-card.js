@@ -4,7 +4,7 @@ import {
   css,
 } from "https://unpkg.com/lit@3.0.0/index.js?module";
 
-const CARD_VERSION = "2.1.1";
+const CARD_VERSION = "2.1.2";
 
 console.info(
   `%c PASSABLE-LOCK-MANAGER-CARD %c v${CARD_VERSION} `,
@@ -1384,27 +1384,39 @@ class PassableLockManagerCard extends LitElement {
             </span>
           </div>
 
-          <div class="timeline-filter-pills">
+          <div class="timeline-header-actions">
             <button
-              class="filter-pill ${filter === "all" ? "active" : ""}"
-              @click=${() => (this._selectedTimelineFilter = "all")}
+              class="feed-refresh-btn ${this._isFetchingActivity
+                ? "spinning"
+                : ""}"
+              @click=${() => this._fetchActivityData()}
+              title="Refresh activity history"
             >
-              All Doors
+              ${Icons.RefreshCw}
             </button>
-            ${locks.map((l) => {
-              const name =
-                l.name ||
-                this._getEntity(l.entity)?.attributes?.friendly_name ||
-                l.entity.replace("lock.", "").replace(/_/g, " ");
-              return html`
-                <button
-                  class="filter-pill ${filter === l.entity ? "active" : ""}"
-                  @click=${() => (this._selectedTimelineFilter = l.entity)}
-                >
-                  ${name}
-                </button>
-              `;
-            })}
+
+            <div class="timeline-filter-pills">
+              <button
+                class="filter-pill ${filter === "all" ? "active" : ""}"
+                @click=${() => (this._selectedTimelineFilter = "all")}
+              >
+                All Doors
+              </button>
+              ${locks.map((l) => {
+                const name =
+                  l.name ||
+                  this._getEntity(l.entity)?.attributes?.friendly_name ||
+                  l.entity.replace("lock.", "").replace(/_/g, " ");
+                return html`
+                  <button
+                    class="filter-pill ${filter === l.entity ? "active" : ""}"
+                    @click=${() => (this._selectedTimelineFilter = l.entity)}
+                  >
+                    ${name}
+                  </button>
+                `;
+              })}
+            </div>
           </div>
         </div>
 
@@ -1452,13 +1464,15 @@ class PassableLockManagerCard extends LitElement {
           </div>
         </div>
 
-        <!-- Collapsible Recent Activity Expander Button -->
-        <button
-          class="activity-expand-btn ${isExpanded ? "open" : ""}"
+        <!-- Collapsible Recent Activity Expander Bar (Div with role=button) -->
+        <div
+          class="activity-expand-bar ${isExpanded ? "open" : ""}"
+          role="button"
+          tabindex="0"
           @click=${() =>
             (this._expandedRecentActivity = !this._expandedRecentActivity)}
         >
-          <div class="expand-btn-left">
+          <div class="expand-bar-left">
             <span class="expand-chevron"
               >${isExpanded ? Icons.ChevronUp : Icons.ChevronDown}</span
             >
@@ -1468,23 +1482,12 @@ class PassableLockManagerCard extends LitElement {
                 : `Show Recent Activity Log (${eventList.length} Events)`}
             </span>
           </div>
-          <div class="expand-btn-right">
-            <button
-              class="feed-refresh-btn ${this._isFetchingActivity
-                ? "spinning"
-                : ""}"
-              @click=${(e) => {
-                e.stopPropagation();
-                this._fetchActivityData();
-              }}
-              title="Refresh activity history"
-            >
-              ${Icons.RefreshCw}
-            </button>
-          </div>
-        </button>
+          <span class="expand-hint">
+            ${isExpanded ? "Collapse" : "View"}
+          </span>
+        </div>
 
-        <!-- Detailed Event List (Collapsible) -->
+        <!-- Detailed Event List (Contained directly inside the Activity Section) -->
         ${isExpanded
           ? html`
               <div class="event-feed-container fade-in">
@@ -1495,7 +1498,7 @@ class PassableLockManagerCard extends LitElement {
                       </div>
                     `
                   : html`
-                      <div class="event-list">
+                      <div class="event-list-scrollable">
                         ${eventList.map(
                           (ev) => html`
                             <div class="event-row">
@@ -2293,6 +2296,33 @@ class PassableLockManagerCard extends LitElement {
         align-items: center;
         color: var(--primary-color, #2196f3);
       }
+      .timeline-header-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .feed-refresh-btn {
+        background: transparent;
+        border: 1px solid var(--divider-color, rgba(255, 255, 255, 0.15));
+        color: var(--secondary-text-color, #757575);
+        cursor: pointer;
+        padding: 4px;
+        width: 24px;
+        height: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        transition: all 0.2s;
+      }
+      .feed-refresh-btn:hover {
+        color: var(--primary-color, #2196f3);
+        border-color: var(--primary-color, #2196f3);
+        background-color: rgba(var(--rgb-primary-color, 33, 150, 243), 0.08);
+      }
+      .feed-refresh-btn.spinning {
+        animation: spin 1s linear infinite;
+      }
       .timeline-filter-pills {
         display: flex;
         gap: 6px;
@@ -2398,17 +2428,13 @@ class PassableLockManagerCard extends LitElement {
         margin-top: 6px;
       }
 
-      /* Collapsible Recent Activity Expander Button */
-      .activity-expand-btn {
-        width: 100%;
+      /* Collapsible Recent Activity Expander Bar */
+      .activity-expand-bar {
         margin-top: 14px;
         padding: 8px 12px;
         border-radius: 8px;
         border: 1px solid var(--divider-color, rgba(255, 255, 255, 0.1));
-        background-color: var(
-          --card-background-color,
-          rgba(255, 255, 255, 0.02)
-        );
+        background-color: rgba(255, 255, 255, 0.02);
         color: var(--primary-text-color);
         cursor: pointer;
         display: flex;
@@ -2417,16 +2443,17 @@ class PassableLockManagerCard extends LitElement {
         font-size: 12px;
         font-weight: 500;
         transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        user-select: none;
       }
-      .activity-expand-btn:hover {
-        background-color: rgba(var(--rgb-primary-color, 33, 150, 243), 0.06);
+      .activity-expand-bar:hover {
+        background-color: rgba(var(--rgb-primary-color, 33, 150, 243), 0.08);
         border-color: var(--primary-color, #2196f3);
       }
-      .activity-expand-btn.open {
+      .activity-expand-bar.open {
         border-color: var(--primary-color, #2196f3);
-        background-color: rgba(var(--rgb-primary-color, 33, 150, 243), 0.04);
+        background-color: rgba(var(--rgb-primary-color, 33, 150, 243), 0.05);
       }
-      .expand-btn-left {
+      .expand-bar-left {
         display: flex;
         align-items: center;
         gap: 6px;
@@ -2436,41 +2463,36 @@ class PassableLockManagerCard extends LitElement {
         display: flex;
         align-items: center;
       }
-      .expand-btn-right {
-        display: flex;
-        align-items: center;
-        gap: 6px;
+      .expand-hint {
+        font-size: 11px;
+        color: var(--secondary-text-color, #757575);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
       }
 
-      /* Detailed Event Feed */
+      /* Detailed Event Feed Container (Inside Activity Section) */
       .event-feed-container {
         margin-top: 12px;
         border-top: 1px solid var(--divider-color, rgba(255, 255, 255, 0.08));
         padding-top: 12px;
       }
-      .feed-refresh-btn {
-        background: transparent;
-        border: none;
-        color: var(--secondary-text-color, #757575);
-        cursor: pointer;
-        padding: 4px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 50%;
-        transition: color 0.2s;
-      }
-      .feed-refresh-btn:hover {
-        color: var(--primary-color, #2196f3);
-      }
-      .feed-refresh-btn.spinning {
-        animation: spin 1s linear infinite;
-      }
-
-      .event-list {
+      .event-list-scrollable {
         display: flex;
         flex-direction: column;
         gap: 8px;
+        max-height: 380px;
+        overflow-y: auto;
+        padding-right: 4px;
+      }
+      .event-list-scrollable::-webkit-scrollbar {
+        width: 4px;
+      }
+      .event-list-scrollable::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .event-list-scrollable::-webkit-scrollbar-thumb {
+        background-color: var(--divider-color, rgba(255, 255, 255, 0.2));
+        border-radius: 4px;
       }
       .event-row {
         display: flex;
@@ -2478,11 +2500,8 @@ class PassableLockManagerCard extends LitElement {
         gap: 12px;
         padding: 8px 12px;
         border-radius: 8px;
-        background-color: var(
-          --card-background-color,
-          rgba(255, 255, 255, 0.02)
-        );
-        border: 1px solid var(--divider-color, rgba(255, 255, 255, 0.05));
+        background-color: rgba(255, 255, 255, 0.02);
+        border: 1px solid var(--divider-color, rgba(255, 255, 255, 0.06));
         transition: all 0.2s;
       }
       .event-row:hover {
