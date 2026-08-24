@@ -4,7 +4,7 @@ import {
   css,
 } from "https://unpkg.com/lit@3.0.0/index.js?module";
 
-const CARD_VERSION = "2.0.2";
+const CARD_VERSION = "2.1.0";
 
 console.info(
   `%c PASSABLE-LOCK-MANAGER-CARD %c v${CARD_VERSION} `,
@@ -102,8 +102,8 @@ const Icons = {
   </svg>`,
   Clock: html`<svg
     xmlns="http://www.w3.org/2000/svg"
-    width="10"
-    height="10"
+    width="12"
+    height="12"
     viewBox="0 0 24 24"
     fill="none"
     stroke="currentColor"
@@ -128,6 +128,21 @@ const Icons = {
     <circle cx="12" cy="12" r="10" />
     <polyline points="12 6 12 12 16 14" />
   </svg>`,
+  History: html`<svg
+    xmlns="http://www.w3.org/2000/svg"
+    width="16"
+    height="16"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+    <path d="M3 3v5h5" />
+    <polyline points="12 7 12 12 15 15" />
+  </svg>`,
   Trash2: html`<svg
     xmlns="http://www.w3.org/2000/svg"
     width="18"
@@ -147,8 +162,8 @@ const Icons = {
   </svg>`,
   RefreshCw: html`<svg
     xmlns="http://www.w3.org/2000/svg"
-    width="20"
-    height="20"
+    width="14"
+    height="14"
     viewBox="0 0 24 24"
     fill="none"
     stroke="currentColor"
@@ -190,8 +205,8 @@ const Icons = {
   </svg>`,
   Key: html`<svg
     xmlns="http://www.w3.org/2000/svg"
-    width="20"
-    height="20"
+    width="14"
+    height="14"
     viewBox="0 0 24 24"
     fill="none"
     stroke="currentColor"
@@ -301,6 +316,9 @@ class PassableLockManagerCard extends LitElement {
       manage_script: "script.manage_lock_codes",
       collapse_inactive_slots: true,
       show_lock_all: true,
+      show_timeline: true,
+      timeline_hours: 24,
+      max_events: 10,
       locks: [
         {
           entity: "lock.front_door",
@@ -326,6 +344,11 @@ class PassableLockManagerCard extends LitElement {
     _localPin: { state: true },
     _openSections: { state: true },
     _expandedInactive: { state: true },
+    _historyData: { state: true },
+    _logbookEvents: { state: true },
+    _selectedTimelineFilter: { state: true },
+    _hoveredSegment: { state: true },
+    _isFetchingActivity: { state: true },
   };
 
   constructor() {
@@ -335,6 +358,15 @@ class PassableLockManagerCard extends LitElement {
     this._localPin = "";
     this._openSections = {};
     this._expandedInactive = false;
+    this._historyData = {};
+    this._logbookEvents = [];
+    this._selectedTimelineFilter = "all";
+    this._hoveredSegment = null;
+    this._isFetchingActivity = false;
+    this._lastFetchTime = 0;
+    this._fetchTimer = null;
+    this._users = [];
+
     this._fullDaysList = [
       "Sunday",
       "Monday",
@@ -345,6 +377,47 @@ class PassableLockManagerCard extends LitElement {
       "Saturday",
     ];
     this._shortDaysList = ["S", "M", "T", "W", "T", "F", "S"];
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    this._fetchUsers();
+    this._fetchActivityData();
+    // Periodic refresh every 45 seconds
+    this._fetchTimer = setInterval(() => {
+      this._fetchActivityData();
+    }, 45000);
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    if (this._fetchTimer) {
+      clearInterval(this._fetchTimer);
+      this._fetchTimer = null;
+    }
+  }
+
+  updated(changedProperties) {
+    super.updated(changedProperties);
+    if (changedProperties.has("hass") && this.hass) {
+      const now = Date.now();
+      if (now - this._lastFetchTime > 30000) {
+        this._fetchActivityData();
+      }
+    }
+  }
+
+  async _fetchUsers() {
+    if (this.hass && this.hass.user && this.hass.user.is_admin) {
+      try {
+        const users = await this.hass.connection.sendMessagePromise({
+          type: "config/auth/list",
+        });
+        this._users = users.map((u) => ({ label: u.name, value: u.id }));
+      } catch {
+        // Silent catch
+      }
+    }
   }
 
   setConfig(config) {
@@ -358,6 +431,9 @@ class PassableLockManagerCard extends LitElement {
       manage_script: "script.manage_lock_codes",
       collapse_inactive_slots: true,
       show_lock_all: true,
+      show_timeline: true,
+      timeline_hours: 24,
+      max_events: 10,
       ...config,
     };
   }
@@ -387,7 +463,6 @@ class PassableLockManagerCard extends LitElement {
     if (!this.hass) return false;
     const adminUsers = this.config?.admin_users;
 
-    // If specific admin users are provided, check ID or username
     if (Array.isArray(adminUsers) && adminUsers.length > 0) {
       const currentUserId = this.hass.user?.id;
       const currentUserName = this.hass.user?.name;
@@ -397,16 +472,14 @@ class PassableLockManagerCard extends LitElement {
       );
     }
 
-    // If require_admin is set to true, check HA admin flag
     if (this.config?.require_admin) {
       return this.hass.user?.is_admin === true;
     }
 
-    // Default: If no restriction configured, allow access
     return true;
   }
 
-  // --- RELATIVE TIME HELPER ---
+  // --- TIME & DURATION HELPERS ---
   _formatRelativeTime(isoString) {
     if (!isoString) return "";
     try {
@@ -425,6 +498,18 @@ class PassableLockManagerCard extends LitElement {
     } catch {
       return "";
     }
+  }
+
+  _formatDuration(ms) {
+    if (ms <= 0) return "0m";
+    const totalSec = Math.floor(ms / 1000);
+    const totalMin = Math.floor(totalSec / 60);
+    if (totalMin < 1) return "< 1m";
+    if (totalMin < 60) return `${totalMin}m`;
+    const hours = Math.floor(totalMin / 60);
+    const remainingMin = totalMin % 60;
+    if (remainingMin === 0) return `${hours}h`;
+    return `${hours}h ${remainingMin}m`;
   }
 
   // --- DOOR LOCK CONTROLS ---
@@ -460,6 +545,415 @@ class PassableLockManagerCard extends LitElement {
     if (unlockedEntities.length > 0) {
       this._callService("lock", "lock", { entity_id: unlockedEntities });
     }
+  }
+
+  // --- WEBSOCKET ACTIVITY & LOGBOOK FETCHING ---
+  async _fetchActivityData() {
+    if (!this.hass || this._isFetchingActivity) return;
+    const locks = this._getNormalizedLocks();
+    const lockEntities = locks.map((l) => l.entity).filter(Boolean);
+    if (lockEntities.length === 0) return;
+
+    this._isFetchingActivity = true;
+    this._lastFetchTime = Date.now();
+    const hours = this.config?.timeline_hours || 24;
+    const startTime = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+
+    try {
+      // 1. Fetch State History for Continuous Timeline Bar
+      const historyPromise = this.hass.callWS({
+        type: "history/history_during_period",
+        start_time: startTime,
+        entity_ids: lockEntities,
+        minimal_response: true,
+        significant_changes_only: true,
+      });
+
+      // 2. Fetch Logbook Events for Detailed Feed
+      const logbookPromise = this.hass.callWS({
+        type: "logbook/get_events",
+        start_time: startTime,
+        entity_ids: lockEntities,
+      });
+
+      const [historyData, logbookData] = await Promise.all([
+        historyPromise.catch(() => null),
+        logbookPromise.catch(() => null),
+      ]);
+
+      if (historyData) {
+        this._historyData = historyData;
+      }
+      if (logbookData) {
+        this._logbookEvents = this._processLogbookEvents(logbookData, locks);
+      }
+    } catch (err) {
+      console.warn("PassableLockManager: Activity fetch error", err);
+    } finally {
+      this._isFetchingActivity = false;
+      this.requestUpdate();
+    }
+  }
+
+  _processLogbookEvents(rawEvents, locks) {
+    if (!rawEvents || !Array.isArray(rawEvents)) return [];
+
+    const doorNameMap = {};
+    locks.forEach((l) => {
+      const lockObj = this._getEntity(l.entity);
+      doorNameMap[l.entity] =
+        l.name ||
+        lockObj?.attributes?.friendly_name ||
+        l.entity.replace("lock.", "").replace(/_/g, " ");
+    });
+
+    const processed = rawEvents.map((ev) => {
+      const entityId = ev.entity_id;
+      const doorName = doorNameMap[entityId] || ev.name || entityId;
+      const rawState = (ev.state || "").toLowerCase();
+      const rawMsg = (ev.message || "").toLowerCase();
+
+      const isLocked =
+        rawState === "locked" ||
+        (rawMsg.includes("locked") && !rawMsg.includes("unlocked"));
+      const isJammed =
+        rawState === "jammed" || rawMsg.includes("jammed");
+      const isUnlocked = !isLocked && !isJammed;
+
+      const when =
+        typeof ev.when === "number"
+          ? new Date(ev.when * 1000)
+          : new Date(ev.when);
+
+      // Identity Resolution
+      let actor = "";
+      let sourceIcon = "manual";
+
+      // 1. PIN Slot Match
+      const slotMatch =
+        rawMsg.match(/slot\s*(\d+)/i) ||
+        rawMsg.match(/code\s*slot\s*(\d+)/i) ||
+        rawMsg.match(/pin\s*(\d+)/i) ||
+        rawMsg.match(/user\s*code\s*(\d+)/i);
+
+      if (slotMatch && slotMatch[1]) {
+        const slotNum = parseInt(slotMatch[1], 10);
+        const slotName = this._getState(`input_text.lock_code_name_${slotNum}`);
+        if (slotName) {
+          actor = `${slotName} (Slot #${slotNum})`;
+        } else {
+          actor = `PIN Code (Slot #${slotNum})`;
+        }
+        sourceIcon = "pin";
+      }
+
+      // 2. Context Name
+      if (!actor && ev.context_name) {
+        actor = ev.context_name;
+        sourceIcon = "user";
+      }
+
+      // 3. Context User ID
+      if (!actor && ev.context_user_id) {
+        if (this._users && this._users.length > 0) {
+          const matchedUser = this._users.find(
+            (u) => u.value === ev.context_user_id
+          );
+          if (matchedUser) {
+            actor = matchedUser.label;
+            sourceIcon = "user";
+          }
+        }
+        if (!actor && this.hass?.user?.id === ev.context_user_id) {
+          actor = this.hass.user.name || "App User";
+          sourceIcon = "user";
+        }
+      }
+
+      // 4. Context Entity ID (Automation/Script)
+      if (!actor && ev.context_entity_id) {
+        const trigEnt = this._getEntity(ev.context_entity_id);
+        actor =
+          trigEnt?.attributes?.friendly_name ||
+          ev.context_entity_id.split(".").pop().replace(/_/g, " ");
+        sourceIcon = "automation";
+      }
+
+      // 5. General Fallbacks
+      if (!actor) {
+        if (
+          rawMsg.includes("keypad") ||
+          rawMsg.includes("code") ||
+          rawMsg.includes("pin")
+        ) {
+          actor = "Keypad PIN";
+          sourceIcon = "pin";
+        } else if (rawMsg.includes("auto") || rawMsg.includes("schedule")) {
+          actor = "Automation";
+          sourceIcon = "automation";
+        } else {
+          actor = "Manual / Physical Key";
+          sourceIcon = "manual";
+        }
+      }
+
+      return {
+        id: (ev.when || Math.random()) + "_" + entityId,
+        entity_id: entityId,
+        doorName,
+        isLocked,
+        isUnlocked,
+        isJammed,
+        actionLabel: isJammed ? "Jammed" : isLocked ? "Locked" : "Unlocked",
+        actor,
+        sourceIcon,
+        when,
+        timeStr: when.toLocaleTimeString([], {
+          hour: "numeric",
+          minute: "2-digit",
+        }),
+        relativeTime: this._formatRelativeTime(when.toISOString()),
+      };
+    });
+
+    processed.sort((a, b) => b.when.getTime() - a.when.getTime());
+    const maxEvents = this.config?.max_events || 10;
+    return processed.slice(0, maxEvents);
+  }
+
+  // --- TIMELINE SEGMENTS COMPUTATION ---
+  _calculateTimelineSegments() {
+    const hours = this.config?.timeline_hours || 24;
+    const windowMs = hours * 3600 * 1000;
+    const now = Date.now();
+    const windowStart = now - windowMs;
+    const windowEnd = now;
+
+    const locks = this._getNormalizedLocks();
+    const filter = this._selectedTimelineFilter || "all";
+
+    let targetEntities = [];
+    if (filter === "all") {
+      targetEntities = locks.map((l) => l.entity);
+    } else {
+      targetEntities = [filter];
+    }
+
+    if (targetEntities.length === 0 || !this._historyData) {
+      return [];
+    }
+
+    if (targetEntities.length === 1) {
+      const entityId = targetEntities[0];
+      const rawStates = this._historyData[entityId] || [];
+      return this._buildSegmentsForEntity(
+        entityId,
+        rawStates,
+        windowStart,
+        windowEnd,
+        windowMs
+      );
+    }
+
+    return this._buildCombinedSegments(
+      targetEntities,
+      windowStart,
+      windowEnd,
+      windowMs
+    );
+  }
+
+  _buildSegmentsForEntity(
+    entityId,
+    rawStates,
+    windowStart,
+    windowEnd,
+    windowMs
+  ) {
+    if (!rawStates || rawStates.length === 0) {
+      const current = this._getState(entityId, "locked");
+      return [
+        {
+          state: current,
+          start: windowStart,
+          end: windowEnd,
+          pctStart: 0,
+          pctWidth: 100,
+          durationStr: `${Math.round(windowMs / 3600000)}h`,
+          timeRangeStr: `${new Date(windowStart).toLocaleTimeString([], {
+            hour: "numeric",
+            minute: "2-digit",
+          })} – Now`,
+          entityId,
+        },
+      ];
+    }
+
+    const sorted = [...rawStates].sort(
+      (a, b) =>
+        new Date(a.last_changed).getTime() - new Date(b.last_changed).getTime()
+    );
+
+    const segments = [];
+    let currentSegmentState = sorted[0].state;
+    let currentSegmentStart = windowStart;
+
+    for (let i = 0; i < sorted.length; i++) {
+      const item = sorted[i];
+      const itemTime = new Date(item.last_changed).getTime();
+
+      if (itemTime < windowStart) {
+        currentSegmentState = item.state;
+        continue;
+      }
+
+      if (itemTime > currentSegmentStart) {
+        const segEnd = itemTime;
+        const durMs = segEnd - currentSegmentStart;
+        segments.push({
+          state: currentSegmentState,
+          start: currentSegmentStart,
+          end: segEnd,
+          pctStart: ((currentSegmentStart - windowStart) / windowMs) * 100,
+          pctWidth: (durMs / windowMs) * 100,
+          durationStr: this._formatDuration(durMs),
+          timeRangeStr: `${new Date(currentSegmentStart).toLocaleTimeString([], {
+            hour: "numeric",
+            minute: "2-digit",
+          })} – ${new Date(segEnd).toLocaleTimeString([], {
+            hour: "numeric",
+            minute: "2-digit",
+          })}`,
+          entityId,
+        });
+      }
+
+      currentSegmentState = item.state;
+      currentSegmentStart = itemTime;
+    }
+
+    if (currentSegmentStart < windowEnd) {
+      const durMs = windowEnd - currentSegmentStart;
+      segments.push({
+        state: currentSegmentState,
+        start: currentSegmentStart,
+        end: windowEnd,
+        pctStart: ((currentSegmentStart - windowStart) / windowMs) * 100,
+        pctWidth: (durMs / windowMs) * 100,
+        durationStr: this._formatDuration(durMs),
+        timeRangeStr: `${new Date(currentSegmentStart).toLocaleTimeString([], {
+          hour: "numeric",
+          minute: "2-digit",
+        })} – Now`,
+        entityId,
+      });
+    }
+
+    return segments;
+  }
+
+  _buildCombinedSegments(targetEntities, windowStart, windowEnd, windowMs) {
+    const timePoints = new Set([windowStart, windowEnd]);
+    targetEntities.forEach((eid) => {
+      const list = this._historyData[eid] || [];
+      list.forEach((item) => {
+        const t = new Date(item.last_changed).getTime();
+        if (t >= windowStart && t <= windowEnd) {
+          timePoints.add(t);
+        }
+      });
+    });
+
+    const sortedTimes = Array.from(timePoints).sort((a, b) => a - b);
+    const segments = [];
+
+    for (let i = 0; i < sortedTimes.length - 1; i++) {
+      const tStart = sortedTimes[i];
+      const tEnd = sortedTimes[i + 1];
+      const midpoint = tStart + (tEnd - tStart) / 2;
+
+      let compositeState = "locked";
+      let anyUnlocked = false;
+      let anyJammed = false;
+
+      targetEntities.forEach((eid) => {
+        const rawStates = this._historyData[eid] || [];
+        let stateAtMid = this._getState(eid, "locked");
+
+        for (let j = rawStates.length - 1; j >= 0; j--) {
+          const changeTime = new Date(rawStates[j].last_changed).getTime();
+          if (changeTime <= midpoint) {
+            stateAtMid = rawStates[j].state;
+            break;
+          }
+        }
+
+        if (stateAtMid === "jammed") anyJammed = true;
+        else if (stateAtMid === "unlocked") anyUnlocked = true;
+      });
+
+      if (anyJammed) compositeState = "jammed";
+      else if (anyUnlocked) compositeState = "unlocked";
+      else compositeState = "locked";
+
+      const durMs = tEnd - tStart;
+      if (durMs <= 0) continue;
+
+      const lastSeg = segments[segments.length - 1];
+      if (lastSeg && lastSeg.state === compositeState) {
+        lastSeg.end = tEnd;
+        const newDur = tEnd - lastSeg.start;
+        lastSeg.pctWidth = (newDur / windowMs) * 100;
+        lastSeg.durationStr = this._formatDuration(newDur);
+        lastSeg.timeRangeStr = `${new Date(lastSeg.start).toLocaleTimeString(
+          [],
+          { hour: "numeric", minute: "2-digit" }
+        )} – ${
+          tEnd === windowEnd
+            ? "Now"
+            : new Date(tEnd).toLocaleTimeString([], {
+                hour: "numeric",
+                minute: "2-digit",
+              })
+        }`;
+      } else {
+        segments.push({
+          state: compositeState,
+          start: tStart,
+          end: tEnd,
+          pctStart: ((tStart - windowStart) / windowMs) * 100,
+          pctWidth: (durMs / windowMs) * 100,
+          durationStr: this._formatDuration(durMs),
+          timeRangeStr: `${new Date(tStart).toLocaleTimeString([], {
+            hour: "numeric",
+            minute: "2-digit",
+          })} – ${
+            tEnd === windowEnd
+              ? "Now"
+              : new Date(tEnd).toLocaleTimeString([], {
+                  hour: "numeric",
+                  minute: "2-digit",
+                })
+          }`,
+          entityId: "all",
+        });
+      }
+    }
+
+    return segments;
+  }
+
+  _getTimeAxisTicks(hours) {
+    if (hours <= 12) {
+      return ["12h ago", "9h ago", "6h ago", "3h ago", "Now"];
+    }
+    if (hours <= 24) {
+      return ["24h ago", "18h ago", "12h ago", "6h ago", "Now"];
+    }
+    if (hours <= 48) {
+      return ["48h ago", "36h ago", "24h ago", "12h ago", "Now"];
+    }
+    return [`${hours}h ago`, `${Math.round(hours * 0.75)}h`, `${Math.round(hours * 0.5)}h`, `${Math.round(hours * 0.25)}h`, "Now"];
   }
 
   // --- EVENT HANDLERS FOR SLOTS ---
@@ -573,7 +1067,7 @@ class PassableLockManagerCard extends LitElement {
     });
   }
 
-  // --- RENDERING ---
+  // --- MAIN RENDER ---
   render() {
     if (!this.hass) return html`<div class="loading">Loading...</div>`;
 
@@ -613,6 +1107,8 @@ class PassableLockManagerCard extends LitElement {
         k.startsWith("input_boolean.lock_code_enabled_") &&
         this.hass.states[k].state === "on"
     ).length;
+
+    const showTimeline = this.config?.show_timeline !== false;
 
     return html`
       <div class="view fade-in">
@@ -664,10 +1160,13 @@ class PassableLockManagerCard extends LitElement {
           </div>
         </div>
 
-        <!-- Live Door Controls Hero Section -->
+        <!-- 1. Live Door Controls Hero Section -->
         ${totalLocks > 0 ? this._renderDoorsSection(locks) : ""}
 
-        <!-- PIN Code & Access Management Section (Role Restricted) -->
+        <!-- 2. 24-Hour Timeline Bar & Activity Feed -->
+        ${showTimeline && totalLocks > 0 ? this._renderActivitySection(locks) : ""}
+
+        <!-- 3. PIN Code & Access Management Section (Role Restricted) -->
         ${canManage ? this._renderSlotsSection(totalSlots, activeSlots) : ""}
       </div>
     `;
@@ -794,11 +1293,168 @@ class PassableLockManagerCard extends LitElement {
     `;
   }
 
+  // --- ACTIVITY & TIMELINE SECTION ---
+  _renderActivitySection(locks) {
+    const hours = this.config?.timeline_hours || 24;
+    const filter = this._selectedTimelineFilter || "all";
+    const segments = this._calculateTimelineSegments();
+    const axisTicks = this._getTimeAxisTicks(hours);
+    const eventList = this._logbookEvents || [];
+
+    return html`
+      <div class="activity-section">
+        <div class="section-label-row">
+          <div class="activity-title-group">
+            <span class="activity-icon-header">${Icons.History}</span>
+            <span class="section-label-text">
+              ${hours}-Hour Timeline & History
+            </span>
+          </div>
+
+          <div class="timeline-filter-pills">
+            <button
+              class="filter-pill ${filter === "all" ? "active" : ""}"
+              @click=${() => (this._selectedTimelineFilter = "all")}
+            >
+              All Doors
+            </button>
+            ${locks.map((l) => {
+              const name =
+                l.name ||
+                this._getEntity(l.entity)?.attributes?.friendly_name ||
+                l.entity.replace("lock.", "").replace(/_/g, " ");
+              return html`
+                <button
+                  class="filter-pill ${filter === l.entity ? "active" : ""}"
+                  @click=${() => (this._selectedTimelineFilter = l.entity)}
+                >
+                  ${name}
+                </button>
+              `;
+            })}
+          </div>
+        </div>
+
+        <!-- 24h Continuous Segmented Bar -->
+        <div class="timeline-bar-wrapper">
+          <div class="timeline-bar">
+            ${segments.map(
+              (seg) => html`
+                <div
+                  class="timeline-segment ${seg.state}"
+                  style="width: ${seg.pctWidth}%;"
+                  @mouseenter=${() => (this._hoveredSegment = seg)}
+                  @mouseleave=${() => (this._hoveredSegment = null)}
+                  @click=${() => (this._hoveredSegment = seg)}
+                ></div>
+              `
+            )}
+          </div>
+
+          <!-- Tooltip on hover / tap -->
+          ${this._hoveredSegment
+            ? html`
+                <div class="timeline-tooltip fade-in">
+                  <span
+                    class="tooltip-dot ${this._hoveredSegment.state}"
+                  ></span>
+                  <span class="tooltip-state"
+                    >${this._hoveredSegment.state.toUpperCase()}</span
+                  >
+                  <span class="tooltip-time"
+                    >${this._hoveredSegment.timeRangeStr}</span
+                  >
+                  <span class="tooltip-duration"
+                    >(${this._hoveredSegment.durationStr})</span
+                  >
+                </div>
+              `
+            : ""}
+
+          <!-- Time Axis Ticks -->
+          <div class="timeline-axis">
+            ${axisTicks.map(
+              (tick) => html`<span class="axis-tick">${tick}</span>`
+            )}
+          </div>
+        </div>
+
+        <!-- Detailed Event List (Last ~10 Events) -->
+        <div class="event-feed-container">
+          <div class="feed-header">
+            <span class="feed-title">Recent Activity (${eventList.length})</span>
+            <button
+              class="feed-refresh-btn ${this._isFetchingActivity
+                ? "spinning"
+                : ""}"
+              @click=${() => this._fetchActivityData()}
+              title="Refresh activity history"
+            >
+              ${Icons.RefreshCw}
+            </button>
+          </div>
+
+          ${eventList.length === 0
+            ? html`
+                <div class="empty-feed">
+                  No lock activity recorded in the last ${hours} hours.
+                </div>
+              `
+            : html`
+                <div class="event-list">
+                  ${eventList.map(
+                    (ev) => html`
+                      <div class="event-row">
+                        <div
+                          class="event-icon-box ${ev.actionLabel.toLowerCase()}"
+                        >
+                          ${ev.isLocked
+                            ? Icons.Lock
+                            : ev.isJammed
+                            ? Icons.AlertTriangle
+                            : Icons.Unlock}
+                        </div>
+
+                        <div class="event-details">
+                          <div class="event-top-line">
+                            <span class="event-door-badge">${ev.doorName}</span>
+                            <span
+                              class="event-action ${ev.actionLabel.toLowerCase()}"
+                              >${ev.actionLabel}</span
+                            >
+                          </div>
+                          <div class="event-sub-line">
+                            <span class="event-actor">
+                              ${ev.sourceIcon === "pin"
+                                ? Icons.Key
+                                : ev.sourceIcon === "user"
+                                ? Icons.User
+                                : ev.sourceIcon === "automation"
+                                ? Icons.Clock
+                                : Icons.Door}
+                              ${ev.actor}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div class="event-time-box">
+                          <span class="event-time-clock">${ev.timeStr}</span>
+                          <span class="event-time-rel">${ev.relativeTime}</span>
+                        </div>
+                      </div>
+                    `
+                  )}
+                </div>
+              `}
+        </div>
+      </div>
+    `;
+  }
+
   // --- SLOTS MANAGEMENT SECTION ---
   _renderSlotsSection(totalSlots, activeSlots) {
     const collapse = this.config?.collapse_inactive_slots !== false;
 
-    // Categorize slots
     const allSlotIndices = Array.from({ length: totalSlots }, (_, i) => i + 1);
     const activeSlotIndices = [];
     const inactiveSlotIndices = [];
@@ -913,7 +1569,6 @@ class PassableLockManagerCard extends LitElement {
   _renderEdit() {
     const slot = this._editingSlot;
 
-    // Entities
     const enabledEntId = `input_boolean.lock_code_enabled_${slot}`;
     const guestEntId = `input_boolean.lock_guest_mode_enabled_${slot}`;
     const durationEntId = `input_number.lock_code_duration_${slot}`;
@@ -1515,6 +2170,282 @@ class PassableLockManagerCard extends LitElement {
         color: var(--secondary-text-color, #757575);
       }
 
+      /* 24-Hour Activity & Timeline Section */
+      .activity-section {
+        margin-bottom: 24px;
+        background-color: var(
+          --secondary-background-color,
+          rgba(255, 255, 255, 0.03)
+        );
+        border: 1px solid var(--divider-color, rgba(255, 255, 255, 0.1));
+        border-radius: var(--ha-card-border-radius, 12px);
+        padding: 16px;
+      }
+      .activity-title-group {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .activity-icon-header {
+        display: flex;
+        align-items: center;
+        color: var(--primary-color, #2196f3);
+      }
+      .timeline-filter-pills {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .filter-pill {
+        background-color: transparent;
+        border: 1px solid var(--divider-color, #e0e0e0);
+        color: var(--secondary-text-color, #757575);
+        border-radius: 12px;
+        padding: 3px 10px;
+        font-size: 11px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+      .filter-pill:hover {
+        background-color: rgba(var(--rgb-primary-color, 33, 150, 243), 0.08);
+      }
+      .filter-pill.active {
+        background-color: var(--primary-color, #2196f3);
+        color: var(--text-primary-color, #fff);
+        border-color: var(--primary-color, #2196f3);
+      }
+
+      .timeline-bar-wrapper {
+        margin-top: 14px;
+        position: relative;
+      }
+      .timeline-bar {
+        height: 20px;
+        width: 100%;
+        border-radius: 6px;
+        overflow: hidden;
+        display: flex;
+        background-color: var(--divider-color, #e0e0e0);
+        box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.15);
+      }
+      .timeline-segment {
+        height: 100%;
+        transition: transform 0.15s ease, filter 0.15s ease;
+        cursor: pointer;
+        min-width: 2px;
+      }
+      .timeline-segment:hover {
+        filter: brightness(1.2);
+        transform: scaleY(1.15);
+        z-index: 2;
+      }
+      .timeline-segment.locked {
+        background-color: var(--success-color, #4caf50);
+      }
+      .timeline-segment.unlocked {
+        background-color: var(--warning-color, #ff9800);
+      }
+      .timeline-segment.jammed {
+        background-color: var(--error-color, #f44336);
+      }
+
+      .timeline-tooltip {
+        margin-top: 8px;
+        padding: 6px 12px;
+        background-color: var(--card-background-color, #212121);
+        color: var(--primary-text-color, #fff);
+        border: 1px solid var(--divider-color, #424242);
+        border-radius: 20px;
+        font-size: 11px;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+      }
+      .tooltip-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+      }
+      .tooltip-dot.locked {
+        background-color: var(--success-color, #4caf50);
+      }
+      .tooltip-dot.unlocked {
+        background-color: var(--warning-color, #ff9800);
+      }
+      .tooltip-dot.jammed {
+        background-color: var(--error-color, #f44336);
+      }
+      .tooltip-state {
+        font-weight: 700;
+        letter-spacing: 0.04em;
+      }
+      .tooltip-time {
+        font-weight: 500;
+      }
+      .tooltip-duration {
+        color: var(--secondary-text-color, #9e9e9e);
+      }
+
+      .timeline-axis {
+        display: flex;
+        justify-content: space-between;
+        font-size: 10px;
+        color: var(--secondary-text-color, #757575);
+        margin-top: 6px;
+      }
+
+      /* Detailed Event Feed */
+      .event-feed-container {
+        margin-top: 18px;
+        border-top: 1px solid var(--divider-color, rgba(255, 255, 255, 0.08));
+        padding-top: 14px;
+      }
+      .feed-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+      .feed-title {
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--secondary-text-color, #757575);
+      }
+      .feed-refresh-btn {
+        background: transparent;
+        border: none;
+        color: var(--secondary-text-color, #757575);
+        cursor: pointer;
+        padding: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        transition: color 0.2s;
+      }
+      .feed-refresh-btn:hover {
+        color: var(--primary-color, #2196f3);
+      }
+      .feed-refresh-btn.spinning {
+        animation: spin 1s linear infinite;
+      }
+
+      .event-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .event-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 8px 12px;
+        border-radius: 8px;
+        background-color: var(
+          --card-background-color,
+          rgba(255, 255, 255, 0.02)
+        );
+        border: 1px solid var(--divider-color, rgba(255, 255, 255, 0.05));
+        transition: all 0.2s;
+      }
+      .event-row:hover {
+        background-color: rgba(var(--rgb-primary-color, 33, 150, 243), 0.04);
+        border-color: rgba(var(--rgb-primary-color, 33, 150, 243), 0.2);
+      }
+      .event-icon-box {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+      .event-icon-box.locked {
+        background-color: rgba(var(--rgb-success-color, 76, 175, 80), 0.15);
+        color: var(--success-color, #4caf50);
+      }
+      .event-icon-box.unlocked {
+        background-color: rgba(var(--rgb-warning-color, 255, 152, 0), 0.15);
+        color: var(--warning-color, #ff9800);
+      }
+      .event-icon-box.jammed {
+        background-color: rgba(var(--rgb-error-color, 244, 67, 54), 0.2);
+        color: var(--error-color, #f44336);
+      }
+      .event-details {
+        flex: 1;
+        min-width: 0;
+      }
+      .event-top-line {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 2px;
+      }
+      .event-door-badge {
+        font-size: 11px;
+        font-weight: 600;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background-color: var(--secondary-background-color, #eee);
+        color: var(--primary-text-color);
+      }
+      .event-action {
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .event-action.locked {
+        color: var(--success-color, #4caf50);
+      }
+      .event-action.unlocked {
+        color: var(--warning-color, #ff9800);
+      }
+      .event-action.jammed {
+        color: var(--error-color, #f44336);
+      }
+      .event-sub-line {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .event-actor {
+        font-size: 12px;
+        color: var(--secondary-text-color, #757575);
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .event-time-box {
+        text-align: right;
+        flex-shrink: 0;
+      }
+      .event-time-clock {
+        font-size: 12px;
+        font-weight: 600;
+        display: block;
+      }
+      .event-time-rel {
+        font-size: 10px;
+        color: var(--secondary-text-color, #757575);
+        display: block;
+        margin-top: 2px;
+      }
+      .empty-feed {
+        font-size: 12px;
+        color: var(--secondary-text-color, #757575);
+        font-style: italic;
+        padding: 8px 0;
+        text-align: center;
+      }
+
       /* Slots Section */
       .slots-section {
         margin-top: 12px;
@@ -2035,6 +2966,14 @@ class PassableLockManagerCard extends LitElement {
           transform: scale(0.98);
         }
       }
+      @keyframes spin {
+        from {
+          transform: rotate(0deg);
+        }
+        to {
+          transform: rotate(360deg);
+        }
+      }
     `;
   }
 }
@@ -2054,6 +2993,7 @@ class PassableLockManagerCardEditor extends LitElement {
     this._expandedSections = {
       header: true,
       doors: true,
+      timeline: true,
       security: false,
       slots: false,
     };
@@ -2124,7 +3064,6 @@ class PassableLockManagerCardEditor extends LitElement {
     this._fireConfigChange();
   }
 
-  // Locks management
   _addLock(ev) {
     if (ev) {
       ev.stopPropagation();
@@ -2456,7 +3395,49 @@ class PassableLockManagerCardEditor extends LitElement {
           </div>
         </div>
 
-        <!-- 3. ACCESS CONTROL & ROLE PERMISSIONS -->
+        <!-- 3. ACTIVITY TIMELINE & HISTORY -->
+        <div class="editor-section">
+          ${renderHeader("timeline", "Activity Timeline & History Feed")}
+          <div
+            class="section-body"
+            style="display: ${this._expandedSections.timeline
+              ? "flex"
+              : "none"};"
+          >
+            <ha-selector
+              .hass=${this.hass}
+              .selector=${{ boolean: {} }}
+              .value=${this._config.show_timeline !== false}
+              .label=${"Show 24-Hour Timeline & Activity Feed"}
+              @value-changed=${(e) =>
+                this._updateConfigValue("show_timeline", e.detail.value)}
+            ></ha-selector>
+
+            <ha-selector
+              .hass=${this.hass}
+              .selector=${{ number: { min: 6, max: 72, step: 6, mode: "box" } }}
+              .value=${this._config.timeline_hours !== undefined
+                ? this._config.timeline_hours
+                : 24}
+              .label=${"Timeline Timeframe Window (Hours)"}
+              @value-changed=${(e) =>
+                this._updateConfigValue("timeline_hours", e.detail.value)}
+            ></ha-selector>
+
+            <ha-selector
+              .hass=${this.hass}
+              .selector=${{ number: { min: 3, max: 30, step: 1, mode: "box" } }}
+              .value=${this._config.max_events !== undefined
+                ? this._config.max_events
+                : 10}
+              .label=${"Maximum Recent Events in Feed"}
+              @value-changed=${(e) =>
+                this._updateConfigValue("max_events", e.detail.value)}
+            ></ha-selector>
+          </div>
+        </div>
+
+        <!-- 4. ACCESS CONTROL & ROLE PERMISSIONS -->
         <div class="editor-section">
           ${renderHeader("security", "Security & Access Permissions (RBAC)")}
           <div
@@ -2466,7 +3447,7 @@ class PassableLockManagerCardEditor extends LitElement {
               : "none"};"
           >
             <p class="help-text">
-              Restrict PIN Code & Schedule management to specific users. Non-admin users will only see the Door Controls section.
+              Restrict PIN Code & Schedule management to specific users. Non-admin users will only see the Door Controls and Timeline sections.
             </p>
 
             <ha-selector
@@ -2495,7 +3476,7 @@ class PassableLockManagerCardEditor extends LitElement {
           </div>
         </div>
 
-        <!-- 4. PIN CODE & SLOT MANAGEMENT -->
+        <!-- 5. PIN CODE & SLOT MANAGEMENT -->
         <div class="editor-section">
           ${renderHeader("slots", "PIN Code Slots & Automation")}
           <div
@@ -2577,6 +3558,6 @@ window.customCards.push({
   name: "Passable Lock Manager Card",
   preview: true,
   description:
-    "Unified smart lock command center with live door toggles, battery & jammed diagnostics, and slot PIN management.",
+    "Unified smart lock command center with live door toggles, 24h activity timeline, battery & jammed diagnostics, and slot PIN management.",
   documentationURL: "https://github.com/GBear09/passable-lock-manager-card",
 });

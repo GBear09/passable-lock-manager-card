@@ -11,12 +11,14 @@ A sleek, dynamic, unified dashboard card for Home Assistant smart locks and PIN 
 ## ✨ Features
 
 - 🚪 **Live Door Controls Hero Section**: 1-tap lock/unlock toggles, live status pill indicators, relative last-changed timestamps, and "Lock All" action.
+- 📊 **24-Hour Continuous Status Timeline**: Interactive color-coded timeline bar (locked, unlocked, jammed) with door filter tabs (*All Doors*, *Front Door*, *Mudroom Door*), segment hover tooltips, and time axis ticks.
+- 📋 **Recent Activity Feed**: Detailed log of recent lock events with actor resolution (keypad slot names, HA user logins, automations, and physical thumbturn actions).
 - 🚨 **Jammed Deadbolt Alerts**: Instant high-urgency pulsing warning banner when a lock is jammed.
 - 🔋 **Battery Health Diagnostics**: Color-coded battery percentage indicators with critical low-battery alerts.
 - 🛡️ **Built-in Role-Based Access Control (RBAC)**: Restrict PIN code slot visibility to specified admin users (`admin_users`) or administrators (`require_admin`).
 - 📂 **Collapsible Inactive Slots**: Keep the card compact by showing active slots first with a 1-tap toggle to expand all slots.
 - 🔐 **Slot Overview Grid**: Displays up to 30 code slots with real-time active/disabled badges, configured name, masked PIN preview (`••••`), and active counters.
-- ⚡ **Full Visual Editor Support**: Native Home Assistant UI editor allowing easy configuration of title, subtitle, door locks, total slot count, collapse settings, and management script entity.
+- ⚡ **Full Visual Editor Support**: Native Home Assistant UI editor allowing easy configuration of title, subtitle, door locks, timeline hours, max events, slot counts, and permissions.
 - 🎲 **Instant PIN Generator**: One-click 6-digit secure random PIN creation inside the slot edit modal.
 - ⏱️ **Temporary Access Timers**: Set duration in hours with selectable timer actions (`clear_code`, `disable_slot`, `notify_only`) and quick start/stop control.
 - 🛡️ **Guest Mode Integration**: Easily assign guest access mode triggers to individual lock slots.
@@ -51,6 +53,9 @@ admin_users:
   - 12061794833e45b6bd5dc50ebbbbbf11
 collapse_inactive_slots: true
 show_lock_all: true
+show_timeline: true
+timeline_hours: 24
+max_events: 10
 locks:
   - entity: lock.front_door
     name: Front Door
