@@ -4,7 +4,7 @@ import {
   css,
 } from "https://unpkg.com/lit@3.0.0/index.js?module";
 
-const CARD_VERSION = "2.1.2";
+const CARD_VERSION = "2.2.0";
 
 console.info(
   `%c PASSABLE-LOCK-MANAGER-CARD %c v${CARD_VERSION} `,
@@ -351,6 +351,8 @@ class PassableLockManagerCard extends LitElement {
     _selectedTimelineFilter: { state: true },
     _hoveredSegment: { state: true },
     _isFetchingActivity: { state: true },
+    _isNativeEngine: { state: true },
+    _engineData: { state: true },
   };
 
   constructor() {
@@ -369,6 +371,9 @@ class PassableLockManagerCard extends LitElement {
     this._lastFetchTime = 0;
     this._fetchTimer = null;
     this._users = [];
+    this._isNativeEngine = false;
+    this._engineData = null;
+    this._lastEngineFetch = 0;
 
     this._fullDaysList = [
       "Sunday",
@@ -385,6 +390,7 @@ class PassableLockManagerCard extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     this._fetchUsers();
+    this._fetchEngineData();
     this._fetchActivityData();
     this._fetchTimer = setInterval(() => {
       this._fetchActivityData();
@@ -403,6 +409,9 @@ class PassableLockManagerCard extends LitElement {
     super.updated(changedProperties);
     if (changedProperties.has("hass") && this.hass) {
       const now = Date.now();
+      if (now - this._lastEngineFetch > 10000 || !this._engineData) {
+        this._fetchEngineData();
+      }
       if (now - this._lastFetchTime > 30000) {
         this._fetchActivityData();
       }
@@ -450,6 +459,35 @@ class PassableLockManagerCard extends LitElement {
     return 6;
   }
 
+  async _fetchEngineData() {
+    if (!this.hass) return;
+    if (this.config?.engine === "yaml") {
+      this._isNativeEngine = false;
+      return;
+    }
+    this._lastEngineFetch = Date.now();
+    try {
+      const res = await this.hass.connection.sendMessagePromise({
+        type: "passable_smart_lock_engine/get_data",
+        reveal_pins: true,
+      });
+      if (res && res.slots) {
+        this._engineData = res;
+        if (!this._isNativeEngine) {
+          this._isNativeEngine = true;
+          console.info(
+            "%c PASSABLE-LOCK-MANAGER-CARD %c Connected to Native Engine (WebSocket) ",
+            "color: white; background: #2196f3; font-weight: bold;",
+            "color: white; background: #10b981; font-weight: bold;"
+          );
+        }
+        this.requestUpdate();
+      }
+    } catch (e) {
+      this._isNativeEngine = false;
+    }
+  }
+
   _callService(domain, service, data) {
     if (this.hass) {
       this.hass.callService(domain, service, data);
@@ -462,6 +500,26 @@ class PassableLockManagerCard extends LitElement {
   }
 
   _getState(entityId, defaultVal = "") {
+    if (this._isNativeEngine && this._engineData?.slots) {
+      const slotMatch = entityId.match(/_(\d+)$/);
+      if (slotMatch) {
+        const slotStr = slotMatch[1];
+        const slotData = this._engineData.slots[slotStr];
+        if (slotData) {
+          if (entityId.includes("lock_code_name_")) return slotData.name || "";
+          if (entityId.includes("lock_code_pin_")) return slotData.pin || "";
+          if (entityId.includes("lock_code_enabled_")) return slotData.enabled ? "on" : "off";
+          if (entityId.includes("guest_mode_enabled_")) return slotData.guest_mode ? "on" : "off";
+          if (entityId.includes("lock_code_duration_")) return (slotData.duration || 1).toString();
+          if (entityId.includes("lock_timer_action_") || entityId.includes("lock_code_action_")) return slotData.timer_action || "Clear Code";
+          if (entityId.includes("lock_code_timer_")) return slotData.timer_expires_at ? "active" : "idle";
+          if (entityId.includes("lock_schedule_enabled_")) return slotData.schedule_enabled ? "on" : "off";
+          if (entityId.includes("lock_schedule_days_")) return (slotData.schedule_days || []).join(",");
+          if (entityId.includes("lock_schedule_start_time_")) return slotData.schedule_start || "00:00:00";
+          if (entityId.includes("lock_schedule_end_time_")) return slotData.schedule_end || "23:59:59";
+        }
+      }
+    }
     const ent = this._getEntity(entityId);
     return ent ? ent.state : defaultVal;
   }
@@ -1040,8 +1098,37 @@ class PassableLockManagerCard extends LitElement {
     this._editingSlot = null;
   }
 
-  _handleSave() {
+  async _handleSave() {
     const slot = this._editingSlot;
+    if (this._isNativeEngine) {
+      try {
+        const slotData = this._engineData?.slots?.[slot] || {};
+        await this.hass.connection.sendMessagePromise({
+          type: "passable_smart_lock_engine/save_slot",
+          slot: parseInt(slot, 10),
+          pin: this._localPin,
+          name: this._localName,
+          enabled: slotData.enabled !== undefined ? slotData.enabled : true,
+          guest_mode: slotData.guest_mode || false,
+          duration: slotData.duration || 1,
+          timer_action: slotData.timer_action || "Clear Code",
+          schedule_enabled: slotData.schedule_enabled || false,
+          schedule_days: slotData.schedule_days || this._fullDaysList,
+          schedule_start: slotData.schedule_start || "00:00:00",
+          schedule_end: slotData.schedule_end || "23:59:59",
+          is_timed: slotData.is_timed || false,
+        });
+        if (this._engineData?.slots && this._engineData.slots[slot]) {
+          this._engineData.slots[slot].name = this._localName;
+          this._engineData.slots[slot].pin = this._localPin;
+        }
+        this._closeEdit();
+        this.requestUpdate();
+        return;
+      } catch (err) {
+        console.warn("Native save fallback:", err);
+      }
+    }
     const scriptEntity =
       this.config?.manage_script || "script.manage_lock_codes";
     const [domain, service] = scriptEntity.split(".");
@@ -1076,6 +1163,24 @@ class PassableLockManagerCard extends LitElement {
     const [domain, service] = scriptEntity.split(".");
 
     if (confirm(`Delete code slot ${slot}?`)) {
+      if (this._isNativeEngine) {
+        try {
+          await this.hass.connection.sendMessagePromise({
+            type: "passable_smart_lock_engine/clear_slot",
+            slot: parseInt(slot, 10),
+          });
+          if (this._engineData?.slots && this._engineData.slots[slot]) {
+            this._engineData.slots[slot].name = "";
+            this._engineData.slots[slot].pin = "";
+            this._engineData.slots[slot].enabled = false;
+          }
+          this._closeEdit();
+          this.requestUpdate();
+          return;
+        } catch (err) {
+          console.warn("Native clear fallback:", err);
+        }
+      }
       this._callService("input_text", "set_value", {
         entity_id: `input_text.lock_code_name_${slot}`,
         value: "",
@@ -1095,7 +1200,39 @@ class PassableLockManagerCard extends LitElement {
     }
   }
 
-  _toggleBoolean(entityId) {
+  async _toggleBoolean(entityId) {
+    if (this._isNativeEngine) {
+      const match = entityId.match(/_(\d+)$/);
+      if (match) {
+        const slot = parseInt(match[1], 10);
+        const slotData = this._engineData?.slots?.[slot];
+        if (slotData) {
+          if (entityId.includes("lock_code_enabled_")) {
+            const newState = !slotData.enabled;
+            try {
+              await this.hass.connection.sendMessagePromise({
+                type: "passable_smart_lock_engine/toggle_slot",
+                slot: slot,
+                enabled: newState,
+              });
+              slotData.enabled = newState;
+              this.requestUpdate();
+              return;
+            } catch (err) {
+              console.warn("Native toggle fallback:", err);
+            }
+          } else if (entityId.includes("guest_mode_enabled_")) {
+            slotData.guest_mode = !slotData.guest_mode;
+            this.requestUpdate();
+            return;
+          } else if (entityId.includes("lock_schedule_enabled_")) {
+            slotData.schedule_enabled = !slotData.schedule_enabled;
+            this.requestUpdate();
+            return;
+          }
+        }
+      }
+    }
     const state = this._getState(entityId);
     this._callService(
       "input_boolean",
@@ -1117,6 +1254,24 @@ class PassableLockManagerCard extends LitElement {
     const isSchedEnabled = this._getState(schedEnabledEntId) === "on";
 
     if (!isSchedEnabled) return;
+
+    if (this._isNativeEngine && this._engineData?.slots?.[slot]) {
+      const slotData = this._engineData.slots[slot];
+      let selectedDays = Array.isArray(slotData.schedule_days)
+        ? [...slotData.schedule_days]
+        : [...this._fullDaysList];
+      if (selectedDays.includes(day)) {
+        selectedDays = selectedDays.filter((d) => d !== day);
+      } else {
+        selectedDays.push(day);
+        selectedDays.sort(
+          (a, b) => this._fullDaysList.indexOf(a) - this._fullDaysList.indexOf(b)
+        );
+      }
+      slotData.schedule_days = selectedDays;
+      this.requestUpdate();
+      return;
+    }
 
     const schedDaysEntId = `input_text.lock_schedule_days_${slot}`;
     const currentStr = this._getState(
@@ -1173,12 +1328,22 @@ class PassableLockManagerCard extends LitElement {
       if (state !== "locked") anyUnlocked = true;
     });
 
-    const totalSlots = this.config?.slots || 10;
-    const activeSlots = Object.keys(this.hass.states).filter(
-      (k) =>
-        k.startsWith("input_boolean.lock_code_enabled_") &&
-        this.hass.states[k].state === "on"
-    ).length;
+    const totalSlots =
+      this.config?.slots ||
+      (this._isNativeEngine && this._engineData?.slots_count) ||
+      10;
+    let activeSlots = 0;
+    if (this._isNativeEngine && this._engineData?.slots) {
+      activeSlots = Object.values(this._engineData.slots).filter(
+        (s) => s && s.enabled
+      ).length;
+    } else {
+      activeSlots = Object.keys(this.hass.states).filter(
+        (k) =>
+          k.startsWith("input_boolean.lock_code_enabled_") &&
+          this.hass.states[k].state === "on"
+      ).length;
+    }
 
     const showTimeline = this.config?.show_timeline !== false;
 
@@ -1188,7 +1353,12 @@ class PassableLockManagerCard extends LitElement {
         <div class="header">
           <div>
             <h1 class="title">${title}</h1>
-            <p class="subtitle">${subtitle}</p>
+            <p class="subtitle">
+              ${subtitle}
+              <span class="engine-badge ${this._isNativeEngine ? "native" : "yaml"}">
+                ${this._isNativeEngine ? "● Native Engine" : "● YAML Helpers"}
+              </span>
+            </p>
           </div>
 
           <div class="header-right">
@@ -1695,7 +1865,10 @@ class PassableLockManagerCard extends LitElement {
     const selectedDays = schedDaysStr ? schedDaysStr.split(",") : [];
 
     const timerOpts =
-      this._getEntity(timerActionEntId)?.attributes?.options || [];
+      this._getEntity(timerActionEntId)?.attributes?.options || [
+        "Clear Code",
+        "Disable Code",
+      ];
 
     const scriptEntity =
       this.config?.manage_script || "script.manage_lock_codes";
@@ -1814,11 +1987,15 @@ class PassableLockManagerCard extends LitElement {
                     type="number"
                     class="custom-input"
                     .value=${this._getState(durationEntId)}
-                    @change=${(e) =>
+                    @change=${(e) => {
+                      if (this._isNativeEngine && this._engineData?.slots?.[slot]) {
+                        this._engineData.slots[slot].duration = parseInt(e.target.value, 10);
+                      }
                       this._callService("input_number", "set_value", {
                         entity_id: durationEntId,
                         value: e.target.value,
-                      })}
+                      });
+                    }}
                   />
                 </div>
                 <div class="input-group">
@@ -1826,11 +2003,15 @@ class PassableLockManagerCard extends LitElement {
                   <select
                     class="custom-select"
                     .value=${this._getState(timerActionEntId)}
-                    @change=${(e) =>
+                    @change=${(e) => {
+                      if (this._isNativeEngine && this._engineData?.slots?.[slot]) {
+                        this._engineData.slots[slot].timer_action = e.target.value;
+                      }
                       this._callService("input_select", "select_option", {
                         entity_id: timerActionEntId,
                         option: e.target.value,
-                      })}
+                      });
+                    }}
                   >
                     ${timerOpts.map(
                       (opt) => html`<option value="${opt}">${opt}</option>`
@@ -1841,7 +2022,18 @@ class PassableLockManagerCard extends LitElement {
               <button
                 class="button-outline"
                 style="margin-top: 16px;"
-                @click=${() =>
+                @click=${() => {
+                  if (this._isNativeEngine) {
+                    this._callService(
+                      "passable_smart_lock_engine",
+                      "manage_lock_codes",
+                      {
+                        action: "set_timed",
+                        code_slot: slot.toString(),
+                      }
+                    );
+                    return;
+                  }
                   this._callService(
                     domain || "script",
                     service || "manage_lock_codes",
@@ -1849,7 +2041,8 @@ class PassableLockManagerCard extends LitElement {
                       action: "set_timed",
                       code_slot: slot.toString(),
                     }
-                  )}
+                  );
+                }}
               >
                 ${Icons.Play}
                 <span style="margin-left:8px"
@@ -1906,11 +2099,15 @@ class PassableLockManagerCard extends LitElement {
                     type="time"
                     class="custom-input time-input"
                     .value=${this._getState(schedStartEntId).slice(0, 5)}
-                    @change=${(e) =>
+                    @change=${(e) => {
+                      if (this._isNativeEngine && this._engineData?.slots?.[slot]) {
+                        this._engineData.slots[slot].schedule_start = e.target.value;
+                      }
                       this._callService("input_datetime", "set_datetime", {
                         entity_id: schedStartEntId,
                         time: e.target.value,
-                      })}
+                      });
+                    }}
                     ?disabled=${!isSchedEnabled}
                   />
                 </div>
@@ -1920,11 +2117,15 @@ class PassableLockManagerCard extends LitElement {
                     type="time"
                     class="custom-input time-input"
                     .value=${this._getState(schedEndEntId).slice(0, 5)}
-                    @change=${(e) =>
+                    @change=${(e) => {
+                      if (this._isNativeEngine && this._engineData?.slots?.[slot]) {
+                        this._engineData.slots[slot].schedule_end = e.target.value;
+                      }
                       this._callService("input_datetime", "set_datetime", {
                         entity_id: schedEndEntId,
                         time: e.target.value,
-                      })}
+                      });
+                    }}
                     ?disabled=${!isSchedEnabled}
                   />
                 </div>
@@ -2766,6 +2967,27 @@ class PassableLockManagerCard extends LitElement {
       .badge.info {
         background-color: rgba(var(--rgb-info-color, 33, 150, 243), 0.15);
         color: var(--info-color, #2196f3);
+      }
+      .engine-badge {
+        display: inline-flex;
+        align-items: center;
+        font-size: 0.68rem;
+        font-weight: 600;
+        padding: 1px 7px;
+        border-radius: 9999px;
+        margin-left: 8px;
+        letter-spacing: 0.02em;
+        vertical-align: middle;
+      }
+      .engine-badge.native {
+        background: rgba(16, 185, 129, 0.15);
+        color: #10b981;
+        border: 1px solid rgba(16, 185, 129, 0.3);
+      }
+      .engine-badge.yaml {
+        background: rgba(245, 158, 11, 0.15);
+        color: #f59e0b;
+        border: 1px solid rgba(245, 158, 11, 0.3);
       }
 
       /* Edit View Styles */
