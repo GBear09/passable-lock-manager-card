@@ -4,7 +4,7 @@ import {
   css,
 } from "https://unpkg.com/lit@3.0.0/index.js?module";
 
-const CARD_VERSION = "2.2.0";
+const CARD_VERSION = "2.2.1";
 
 console.info(
   `%c PASSABLE-LOCK-MANAGER-CARD %c v${CARD_VERSION} `,
@@ -1156,7 +1156,7 @@ class PassableLockManagerCard extends LitElement {
     this._localPin = pin;
   }
 
-  _handleClear() {
+  async _handleClear() {
     const slot = this._editingSlot;
     const scriptEntity =
       this.config?.manage_script || "script.manage_lock_codes";
